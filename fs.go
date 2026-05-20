@@ -30,7 +30,7 @@ type TarFS struct {
 func NewFS(archivePath, indexPath string) (*TarFS, error) {
 	if indexPath == "" {
 		var err error
-		indexPath, err = getStandardIndexPath(archivePath)
+		indexPath, err = GetStandardIndexPath(archivePath)
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +75,7 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		xzBlocks:    xzBlocks,
 	}, nil
 }
-func getStandardIndexPath(archivePath string) (string, error) {
+func GetStandardIndexPath(archivePath string) (string, error) {
 	absPath, err := filepath.Abs(archivePath)
 	if err != nil {
 		return "", err
