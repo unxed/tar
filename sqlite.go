@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"bytes"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 type FileNode struct {
@@ -49,7 +49,7 @@ func normalizePath(p string) (dir, name string) {
 
 // OpenIndex opens or creates a ratarmount-compatible SQLite index.
 func OpenIndex(dsn string) (*Index, error) {
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
