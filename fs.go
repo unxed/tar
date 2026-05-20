@@ -82,13 +82,76 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 	}
 
 	// Emulate random access for compressed streams.
-	// This is O(N) where N is the data offset.
 	di, ok := decompressors.Load(t.method)
 	if !ok {
 		f.Close()
 		return nil, ErrAlgorithm
 	}
-	dcomp, err := di.(Decompressor)(f)
+	decompressorObj := di.(Decompressor)
+
+	var dcomp io.ReadCloser
+
+	// O(1) Fast path: ZSTD / BZIP2 block offset lookup
+	table := ""
+	if t.method == ZSTD {
+		table = "zstdblocks"
+	} else if t.method == BZIP2 {
+		table = "bzip2blocks"
+	}
+
+	if table != "" {
+		if importer, ok := di.(BlockOffsetImporter); ok {
+			bo, err := t.Index.GetClosestBlockOffset(table, node.Offset)
+			if err == nil && bo != nil {
+				dcomp, err = importer.ResumeFromBlockOffset(f, bo)
+				if err == nil {
+					remaining := node.Offset - bo.DataOffset
+					if remaining > 0 {
+						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
+							dcomp.Close()
+							f.Close()
+							return nil, err
+						}
+					}
+
+					lr := io.LimitReader(dcomp, node.Size)
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
+				}
+			}
+		}
+	}
+
+	// O(1) Fast path: GZIP serialized index lookup
+	if t.method == GZIP {
+		if importer, ok := di.(GzipIndexImporter); ok {
+			indexData, err := t.Index.GetGzipIndex()
+			if err == nil && len(indexData) > 0 {
+				dcomp, uncompOffset, err := importer.ResumeFromGzipIndex(f, indexData, node.Offset)
+				if err == nil {
+					// GZIP index seekable decoder can Seek() directly inside dcomp
+					if seeker, ok := dcomp.(io.ReadSeeker); ok {
+						seeker.Seek(node.Offset, io.SeekStart)
+					} else {
+						remaining := node.Offset - uncompOffset
+						if remaining > 0 {
+							if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
+								dcomp.Close()
+								f.Close()
+								return nil, err
+							}
+						}
+					}
+
+					lr := io.LimitReader(dcomp, node.Size)
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
+				}
+			}
+		}
+	}
+
+	// O(N) Fallback path: decompress from the beginning
+	f.Seek(0, io.SeekStart)
+	dcomp, err = decompressorObj.Decompress(f)
 	if err != nil {
 		f.Close()
 		return nil, err

@@ -60,7 +60,7 @@ func IndexArchive(archivePath, indexPath string) error {
 		if !ok {
 			return ErrAlgorithm
 		}
-		dcomp, err := di.(Decompressor)(f)
+		dcomp, err := di.(Decompressor).Decompress(f)
 		if err != nil {
 			return err
 		}
@@ -125,6 +125,25 @@ func IndexArchive(archivePath, indexPath string) error {
 	if len(batch) > 0 {
 		if err := idx.Insert(batch); err != nil {
 			return err
+		}
+	}
+
+	// Save compression indices at the end of indexing (O(1) database writes)
+	if exporter, ok := rd.(BlockOffsetExporter); ok {
+		table := ""
+		if method == ZSTD {
+			table = "zstdblocks"
+		} else if method == BZIP2 {
+			table = "bzip2blocks"
+		}
+		if table != "" {
+			idx.InsertBlockOffsets(table, exporter.ExportBlockOffsets())
+		}
+	}
+
+	if exporter, ok := rd.(GzipIndexExporter); ok {
+		if data, err := exporter.ExportGzipIndex(); err == nil {
+			idx.SaveGzipIndex(data)
 		}
 	}
 

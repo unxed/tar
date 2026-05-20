@@ -37,7 +37,7 @@ func OpenReader(name string) (*ReadCloser, error) {
 		}
 
 		f.Seek(0, io.SeekStart)
-		dcomp, err = di.(Decompressor)(f)
+		dcomp, err = di.(Decompressor).Decompress(f)
 		if err != nil {
 			f.Close()
 			return nil, err

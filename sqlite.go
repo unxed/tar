@@ -5,6 +5,8 @@ import (
 	"path"
 	"strings"
 	"time"
+	"fmt"
+	"bytes"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -82,6 +84,19 @@ func OpenIndex(dsn string) (*Index, error) {
 		name VARCHAR(65535) NOT NULL PRIMARY KEY,
 		version VARCHAR(65535) NOT NULL,
 		major INTEGER, minor INTEGER, patch INTEGER
+	);
+
+	-- Ratarmount-compatible compression index schemas
+	CREATE TABLE IF NOT EXISTS "zstdblocks" (
+		"blockoffset" INTEGER PRIMARY KEY,
+		"dataoffset" INTEGER
+	);
+	CREATE TABLE IF NOT EXISTS "bzip2blocks" (
+		"blockoffset" INTEGER PRIMARY KEY,
+		"dataoffset" INTEGER
+	);
+	CREATE TABLE IF NOT EXISTS "gzipindexes" (
+		"data" BLOB
 	);
 	`)
 	if err != nil {
@@ -243,4 +258,90 @@ func (idx *Index) RecursiveSize(p string) (int64, error) {
 		SELECT COALESCE(SUM(size), 0) FROM latest_files
 	`, fullPath, fullPath+"/%").Scan(&size)
 	return size, err
+}
+
+type BlockOffset struct {
+	BlockOffset int64 // Compressed block offset (bit or byte depending on format)
+	DataOffset  int64 // Uncompressed data offset (byte)
+}
+
+// InsertBlockOffsets bulk-inserts block boundaries for formats like ZSTD and BZIP2.
+func (idx *Index) InsertBlockOffsets(table string, offsets []BlockOffset) error {
+	tx, err := idx.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(fmt.Sprintf(`INSERT OR REPLACE INTO "%s" (blockoffset, dataoffset) VALUES (?, ?)`, table))
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+
+	for _, o := range offsets {
+		_, err = stmt.Exec(o.BlockOffset, o.DataOffset)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetClosestBlockOffset finds the nearest block start position for O(1) seeking.
+func (idx *Index) GetClosestBlockOffset(table string, targetDataOffset int64) (*BlockOffset, error) {
+	row := idx.db.QueryRow(fmt.Sprintf(`
+		SELECT blockoffset, dataoffset
+		FROM "%s"
+		WHERE dataoffset <= ?
+		ORDER BY dataoffset DESC LIMIT 1
+	`, table), targetDataOffset)
+	var bo BlockOffset
+	err := row.Scan(&bo.BlockOffset, &bo.DataOffset)
+	if err != nil {
+		return nil, err
+	}
+	return &bo, nil
+}
+
+// GetGzipIndex loads and concatenates chunked GZIP indexes (compatible with ratarmount's chunking).
+func (idx *Index) GetGzipIndex() ([]byte, error) {
+	rows, err := idx.db.Query(`SELECT data FROM gzipindexes ORDER BY rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var buf bytes.Buffer
+	for rows.Next() {
+		var chunk []byte
+		if err := rows.Scan(&chunk); err != nil {
+			return nil, err
+		}
+		buf.Write(chunk)
+	}
+	return buf.Bytes(), nil
+}
+
+// SaveGzipIndex clears and saves a new GZIP index in chunked format (max 256MB per row).
+func (idx *Index) SaveGzipIndex(data []byte) error {
+	tx, err := idx.db.Begin()
+	if err != nil {
+		return err
+	}
+	_, _ = tx.Exec(`DELETE FROM gzipindexes`)
+
+	const maxChunk = 256 * 1024 * 1024 // 256MB limit per SQLite BLOB
+	for i := 0; i < len(data); i += maxChunk {
+		end := i + maxChunk
+		if end > len(data) {
+			end = len(data)
+		}
+		_, err = tx.Exec(`INSERT INTO gzipindexes (data) VALUES (?)`, data[i:end])
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
