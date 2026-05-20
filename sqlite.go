@@ -203,3 +203,44 @@ func (idx *Index) List(p string) ([]FileNode, error) {
 	}
 	return res, nil
 }
+
+// RecursiveSize calculates the cumulative size of all files inside the specified
+// directory path recursively, without reading the archive. It respects appended duplicates.
+func (idx *Index) RecursiveSize(p string) (int64, error) {
+	dir, name := normalizePath(p)
+	fullPath := dir
+	if name != "" {
+		if dir == "/" {
+			fullPath = "/" + name
+		} else {
+			fullPath = dir + "/" + name
+		}
+	}
+
+	if fullPath == "/" {
+		var size int64
+		err := idx.db.QueryRow(`
+			WITH latest_files AS (
+				SELECT size
+				FROM files
+				GROUP BY path, name
+				HAVING offsetheader = MAX(offsetheader)
+			)
+			SELECT COALESCE(SUM(size), 0) FROM latest_files
+		`).Scan(&size)
+		return size, err
+	}
+
+	var size int64
+	err := idx.db.QueryRow(`
+		WITH latest_files AS (
+			SELECT size
+			FROM files
+			WHERE path = ? OR path LIKE ?
+			GROUP BY path, name
+			HAVING offsetheader = MAX(offsetheader)
+		)
+		SELECT COALESCE(SUM(size), 0) FROM latest_files
+	`, fullPath, fullPath+"/%").Scan(&size)
+	return size, err
+}

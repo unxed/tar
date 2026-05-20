@@ -59,4 +59,14 @@ func TestTarFS(t *testing.T) {
 	if !found {
 		t.Errorf("WalkDir didn't find folder/sub.txt, got %v", paths)
 	}
+
+	// Test RecursiveSize calculation on the index
+	size, err := tfs.RecursiveSize("src")
+	if err != nil {
+		t.Fatalf("RecursiveSize failed: %v", err)
+	}
+	expectedSize := int64(len("hello random access") + len("ratarmount is awesome"))
+	if size != expectedSize {
+		t.Errorf("Expected recursive size of 'src' to be %d, got %d", expectedSize, size)
+	}
 }

@@ -52,6 +52,10 @@ func (t *TarFS) Close() error {
 	return t.Index.Close()
 }
 
+func (t *TarFS) RecursiveSize(name string) (int64, error) {
+	return t.Index.RecursiveSize("/" + name)
+}
+
 func (t *TarFS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
