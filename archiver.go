@@ -16,11 +16,18 @@ type ArchiverOption func(*archiverOptions) error
 type archiverOptions struct {
 	method      uint16
 	chroot      string
+	indexPath   string
 }
 
 func WithArchiverMethod(method uint16) ArchiverOption {
 	return func(o *archiverOptions) error {
 		o.method = method
+		return nil
+	}
+}
+func WithArchiverIndex(path string) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.indexPath = path
 		return nil
 	}
 }
@@ -52,7 +59,12 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 		}
 	}
 
-	wc, err := CreateWriter(filename, a.options.method)
+	var wopts []WriterOption
+	if a.options.indexPath != "" {
+		wopts = append(wopts, WithWriterIndex(a.options.indexPath))
+	}
+
+	wc, err := CreateWriter(filename, a.options.method, wopts...)
 	if err != nil {
 		return nil, err
 	}

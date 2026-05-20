@@ -78,6 +78,16 @@ func (t *trackingByteReader) Read(p []byte) (n int, err error) {
 	t.pos += int64(n)
 	return n, err
 }
+type trackingWriter struct {
+	w   io.Writer
+	pos int64
+}
+
+func (t *trackingWriter) Write(p []byte) (n int, err error) {
+	n, err = t.w.Write(p)
+	t.pos += int64(n)
+	return n, err
+}
 
 func (t *trackingByteReader) ReadByte() (byte, error) {
 	var buf [1]byte

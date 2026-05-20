@@ -8,19 +8,45 @@ import (
 
 type WriteCloser struct {
 	*tar.Writer
-	f    *os.File
-	comp io.WriteCloser
+	f             *os.File
+	comp          io.WriteCloser
+	method        uint16
+	idx           *Index
+	uncompTracker *trackingWriter
+	compTracker   *trackingWriter
+	lastFlushPos  int64
+	batch         []FileNode
+	seenParents   map[string]bool
+	gzPoints      []gzPoint
+	zstdBlocks    []BlockOffset
 }
 
 // CreateWriter creates a new TAR or compressed TAR file.
 // Method should be one of Store, GZIP, BZIP2, XZ, ZSTD.
-func CreateWriter(name string, method uint16) (*WriteCloser, error) {
+type WriterOption func(*WriteCloser)
+
+// WithWriterIndex enables on-the-fly indexing during archive creation.
+func WithWriterIndex(indexPath string) WriterOption {
+	return func(wc *WriteCloser) {
+		os.Remove(indexPath)
+		idx, err := OpenIndex(indexPath)
+		if err == nil {
+			wc.idx = idx
+			// Write ratarmount metadata
+			wc.idx.db.Exec(`INSERT INTO versions (name, version, major, minor, patch) VALUES ('ratarmount', '1.3.0', 1, 3, 0)`)
+			wc.idx.db.Exec(`INSERT INTO versions (name, version, major, minor, patch) VALUES ('index', '0.7.0', 0, 7, 0)`)
+		}
+	}
+}
+
+func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteCloser, error) {
 	f, err := os.Create(name)
 	if err != nil {
 		return nil, err
 	}
 
-	var wr io.Writer = f
+	compTracker := &trackingWriter{w: f}
+	var wr io.Writer = compTracker
 	var comp io.WriteCloser
 
 	if method != Store {
@@ -29,7 +55,7 @@ func CreateWriter(name string, method uint16) (*WriteCloser, error) {
 			f.Close()
 			return nil, ErrAlgorithm
 		}
-		comp, err = ci.(Compressor)(f)
+		comp, err = ci.(Compressor)(wr)
 		if err != nil {
 			f.Close()
 			return nil, err
@@ -37,16 +63,148 @@ func CreateWriter(name string, method uint16) (*WriteCloser, error) {
 		wr = comp
 	}
 
-	return &WriteCloser{
-		Writer: tar.NewWriter(wr),
-		f:      f,
-		comp:   comp,
-	}, nil
+	uncompTracker := &trackingWriter{w: wr}
+
+	wc := &WriteCloser{
+		Writer:        tar.NewWriter(uncompTracker),
+		f:             f,
+		comp:          comp,
+		method:        method,
+		uncompTracker: uncompTracker,
+		compTracker:   compTracker,
+		seenParents:   make(map[string]bool),
+	}
+
+	for _, o := range opts {
+		o(wc)
+	}
+
+	if wc.idx != nil && method == GZIP {
+		wc.gzPoints = append(wc.gzPoints, gzPoint{compOffset: 0, uncompOffset: 0, bits: 0, hasData: 0})
+	}
+	if wc.idx != nil && method == ZSTD {
+		wc.zstdBlocks = append(wc.zstdBlocks, BlockOffset{BlockOffset: 0, DataOffset: 0})
+	}
+
+	return wc, nil
+}
+
+func (wc *WriteCloser) WriteHeader(hdr *Header) error {
+	if wc.idx == nil {
+		return wc.Writer.WriteHeader(hdr)
+	}
+
+	headerOffset := wc.uncompTracker.pos
+	err := wc.Writer.WriteHeader(hdr)
+	if err != nil {
+		return err
+	}
+	dataOffset := wc.uncompTracker.pos
+
+	insertParentFolders(hdr.Name, &wc.batch, wc.seenParents)
+	dir, name := normalizePath(hdr.Name)
+
+	wc.batch = append(wc.batch, FileNode{
+		Path:         dir,
+		Name:         name,
+		OffsetHeader: headerOffset,
+		Offset:       dataOffset,
+		Size:         hdr.Size,
+		Mode:         int64(hdr.Mode),
+		ModTime:      hdr.ModTime,
+		Type:         hdr.Typeflag,
+		LinkName:     hdr.Linkname,
+		Uid:          hdr.Uid,
+		Gid:          hdr.Gid,
+	})
+
+	if len(wc.batch) >= 1000 {
+		wc.idx.Insert(wc.batch)
+		wc.batch = wc.batch[:0]
+	}
+
+	return nil
+}
+
+func (wc *WriteCloser) Write(p []byte) (int, error) {
+	n, err := wc.Writer.Write(p)
+	if err != nil || wc.idx == nil || wc.method == Store {
+		return n, err
+	}
+
+	// Periodic Flush (every 4MB) to create seek points
+	const flushThreshold = 4 * 1024 * 1024
+	if wc.uncompTracker.pos-wc.lastFlushPos >= flushThreshold {
+		if wc.method == ZSTD || wc.method == GZIP {
+			wc.createSeekPoint()
+		}
+	}
+
+	return n, err
+}
+
+func (wc *WriteCloser) createSeekPoint() {
+	if wc.method == ZSTD || wc.method == GZIP {
+		// We close the current member/frame and start a new one.
+		// This ensures the next byte in the output stream is a valid frame header
+		// (GZIP magic or ZSTD magic), allowing O(1) random access seeking
+		// without needing to recover the compression state (sliding window/dictionary).
+		wc.comp.Close()
+
+		if wc.method == ZSTD {
+			wc.zstdBlocks = append(wc.zstdBlocks, BlockOffset{
+				BlockOffset: wc.compTracker.pos,
+				DataOffset:  wc.uncompTracker.pos,
+			})
+		} else {
+			wc.gzPoints = append(wc.gzPoints, gzPoint{
+				compOffset:   uint64(wc.compTracker.pos),
+				uncompOffset: uint64(wc.uncompTracker.pos),
+				bits:         0,
+				hasData:      0,
+			})
+		}
+
+		ci, _ := compressors.Load(wc.method)
+		newComp, err := ci.(Compressor)(wc.compTracker)
+		if err == nil {
+			wc.comp = newComp
+			// Update the target of our tracking wrapper so the tar.Writer
+			// now pumps data into the new compression member.
+			wc.uncompTracker.w = newComp
+			wc.lastFlushPos = wc.uncompTracker.pos
+		}
+	}
 }
 
 func (wc *WriteCloser) Close() error {
 	var err1, err2, err3 error
 	err1 = wc.Writer.Close() // Flushes tar EOF blocks
+
+	if wc.idx != nil {
+		if len(wc.batch) > 0 {
+			wc.idx.Insert(wc.batch)
+		}
+
+		if wc.method == ZSTD && len(wc.zstdBlocks) > 0 {
+			wc.idx.InsertBlockOffsets("zstdblocks", wc.zstdBlocks)
+		}
+
+		if wc.method == GZIP && len(wc.gzPoints) > 0 {
+			// Construct GZIDX blob
+			gzidx := &gzipIndexTrackingReader{
+				points:      wc.gzPoints,
+				uncompOffset: wc.uncompTracker.pos,
+				spacing:     4 * 1024 * 1024,
+				trackReader: &trackingByteReader{pos: wc.compTracker.pos},
+			}
+			if data, err := gzidx.ExportGzipIndex(); err == nil {
+				wc.idx.SaveGzipIndex(data)
+			}
+		}
+		wc.idx.Close()
+	}
+
 	if wc.comp != nil {
 		err2 = wc.comp.Close() // Flushes compression frame
 	}
