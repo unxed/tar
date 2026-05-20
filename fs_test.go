@@ -77,6 +77,34 @@ func TestTarFS(t *testing.T) {
 		t.Errorf("Expected recursive size of 'src' to be %d, got %d", expectedSize, size)
 	}
 }
+func TestTarFS_DefaultCache(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "cache_test.tar")
+
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := NewWriter(f)
+	tw.WriteHeader(&Header{Name: "test.txt", Size: 4})
+	tw.Write([]byte("data"))
+	tw.Close()
+	f.Close()
+
+	tfs, err := NewFS(archivePath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tfs.Close()
+
+	if tfs.IndexPath == "" {
+		t.Error("Expected automatic IndexPath to be non-empty")
+	}
+
+	if _, err := os.Stat(tfs.IndexPath); os.IsNotExist(err) {
+		t.Errorf("Standard index file not created at %s", tfs.IndexPath)
+	}
+}
 
 // TestZstdFastPath verifies that TarFS successfully utilizes saved zstdblocks
 // to perform O(1) random-access seeking in multi-frame ZSTD archives without CGO.

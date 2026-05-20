@@ -2,11 +2,15 @@ package tar
 
 import (
 	"bytes"
-	"errors"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/ulikunitz/xz"
@@ -24,6 +28,14 @@ type TarFS struct {
 // This enables integration with http.FileServer, fs.WalkDir, etc.
 // If the SQLite index does not exist, it will be generated automatically.
 func NewFS(archivePath, indexPath string) (*TarFS, error) {
+	if indexPath == "" {
+		var err error
+		indexPath, err = getStandardIndexPath(archivePath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
 		if err := IndexArchive(archivePath, indexPath); err != nil {
 			return nil, err
@@ -62,6 +74,45 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		method:      method,
 		xzBlocks:    xzBlocks,
 	}, nil
+}
+func getStandardIndexPath(archivePath string) (string, error) {
+	absPath, err := filepath.Abs(archivePath)
+	if err != nil {
+		return "", err
+	}
+
+	var cacheDir string
+	if runtime.GOOS == "windows" {
+		cacheDir = os.Getenv("LOCALAPPDATA")
+		if cacheDir == "" {
+			cacheDir = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		cacheDir = filepath.Join(cacheDir, "ratarmount", "Cache")
+	} else {
+		cacheDir = os.Getenv("XDG_CACHE_HOME")
+		if cacheDir == "" {
+			home := os.Getenv("HOME")
+			if home == "" {
+				return "", fmt.Errorf("tar: cannot determine user home directory")
+			}
+			cacheDir = filepath.Join(home, ".cache")
+		}
+		cacheDir = filepath.Join(cacheDir, "ratarmount")
+	}
+
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		return absPath + ".index.sqlite", nil
+	}
+
+	cleanName := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ':' {
+			return '_'
+		}
+		return r
+	}, absPath)
+
+	cleanName = strings.TrimPrefix(cleanName, "_")
+	return filepath.Join(cacheDir, cleanName+".sqlite"), nil
 }
 
 func readVLI(r io.Reader) (uint64, error) {
