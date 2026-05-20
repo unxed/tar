@@ -132,6 +132,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			continue
 
 		case TypeChar, TypeBlock, TypeFifo:
+			os.MkdirAll(filepath.Dir(path), 0777)
 			wg.Go(func() error {
 				err := extractSpecialFile(path, hdr)
 				if err != nil {
