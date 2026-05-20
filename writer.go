@@ -144,7 +144,7 @@ func (wc *WriteCloser) Write(p []byte) (int, error) {
 }
 
 func (wc *WriteCloser) createSeekPoint() {
-	if wc.method == ZSTD || wc.method == GZIP {
+	if wc.method == ZSTD || wc.method == GZIP || wc.method == XZ {
 		// We close the current member/frame and start a new one.
 		// This ensures the next byte in the output stream is a valid frame header
 		// (GZIP magic or ZSTD magic), allowing O(1) random access seeking
