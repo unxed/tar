@@ -2,6 +2,7 @@ package tar
 
 import (
 	"bytes"
+	"context"
 	"compress/gzip"
 	"encoding/binary"
 	"io"
@@ -161,5 +162,72 @@ func TestGzipResumeWithNoDataPoint(t *testing.T) {
 	}
 	if string(data) != "hello seekable world" {
 		t.Errorf("Expected 'hello seekable world', got %q", string(data))
+	}
+}
+
+// TestXzRandomAccess verifies native XZ index parsing and O(1) block-level seeking.
+func TestXzRandomAccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	tarPath := filepath.Join(tmpDir, "test_xz.tar.xz")
+	indexPath := filepath.Join(tmpDir, "test_xz.sqlite")
+
+	srcDir := filepath.Join(tmpDir, "src")
+	os.MkdirAll(filepath.Join(srcDir, "sub"), 0755)
+	file1Data := bytes.Repeat([]byte("A"), 1024*1024) // 1MB
+	file2Data := bytes.Repeat([]byte("B"), 1024*1024) // 1MB
+
+	os.WriteFile(filepath.Join(srcDir, "file1.txt"), file1Data, 0644)
+	os.WriteFile(filepath.Join(srcDir, "sub", "file2.txt"), file2Data, 0644)
+
+	// Explicitly compress with XZ method
+	a, err := NewArchiver(tarPath, filepath.Dir(srcDir), WithArchiverMethod(XZ))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	files := make(map[string]os.FileInfo)
+	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil { return err }
+		files[path] = info
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Archive(context.Background(), files); err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+
+	// Read and verify XZ Blocks natively
+	f, err := os.Open(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := f.Stat()
+	blocks, err := parseXZIndex(f, fi.Size())
+	f.Close()
+	if err != nil {
+		t.Fatalf("Failed to parse native XZ index: %v", err)
+	}
+	if len(blocks) == 0 {
+		t.Fatal("Parsed XZ block offset list is empty")
+	}
+
+	// Mount through TarFS
+	tfs, err := NewFS(tarPath, indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tfs.Close()
+
+	// Verify we can seek and read sub/file2.txt correctly
+	data, err := fs.ReadFile(tfs, "src/sub/file2.txt")
+	if err != nil {
+		t.Fatalf("Failed to read file2.txt: %v", err)
+	}
+	if !bytes.Equal(data, file2Data) {
+		t.Error("Decompressed XZ random access data mismatch")
 	}
 }

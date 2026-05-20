@@ -2,10 +2,14 @@ package tar
 
 import (
 	"bytes"
+	"errors"
+	"encoding/binary"
 	"io"
 	"io/fs"
 	"os"
 	"time"
+
+	"github.com/ulikunitz/xz"
 )
 
 type TarFS struct {
@@ -13,6 +17,7 @@ type TarFS struct {
 	IndexPath   string
 	Index       *Index
 	method      uint16
+	xzBlocks    []BlockOffset
 }
 
 // NewFS opens a tar archive as a standard Go fs.FS (File System).
@@ -40,12 +45,103 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		return nil, err
 	}
 
+	var xzBlocks []BlockOffset
+	if method == XZ {
+		f, err := os.Open(archivePath)
+		if err == nil {
+			fi, _ := f.Stat()
+			xzBlocks, _ = parseXZIndex(f, fi.Size())
+			f.Close()
+		}
+	}
+
 	return &TarFS{
 		ArchivePath: archivePath,
 		IndexPath:   indexPath,
 		Index:       idx,
 		method:      method,
+		xzBlocks:    xzBlocks,
 	}, nil
+}
+
+func readVLI(r io.Reader) (uint64, error) {
+	var v uint64
+	var shift uint
+	for {
+		var b [1]byte
+		if _, err := r.Read(b[:]); err != nil {
+			return 0, err
+		}
+		v |= uint64(b[0]&0x7F) << shift
+		if b[0]&0x80 == 0 {
+			break
+		}
+		shift += 7
+		if shift >= 64 {
+			return 0, errors.New("tar: VLI overflow")
+		}
+	}
+	return v, nil
+}
+
+func parseXZIndex(r io.ReaderAt, fileSize int64) ([]BlockOffset, error) {
+	if fileSize < 24 {
+		return nil, errors.New("tar: file too small for XZ index")
+	}
+	var footer [12]byte
+	if _, err := r.ReadAt(footer[:], fileSize-12); err != nil {
+		return nil, err
+	}
+	if footer[10] != 0x59 || footer[11] != 0x5a {
+		return nil, errors.New("tar: invalid XZ footer magic")
+	}
+	backwardSize := binary.LittleEndian.Uint32(footer[4:8])
+	indexSize := int64(backwardSize+1) * 4
+
+	indexOffset := fileSize - 12 - indexSize
+	if indexOffset < 12 {
+		return nil, errors.New("tar: invalid XZ index offset")
+	}
+
+	sr := io.NewSectionReader(r, indexOffset, indexSize)
+	var indIndicator [1]byte
+	if _, err := sr.Read(indIndicator[:]); err != nil {
+		return nil, err
+	}
+	if indIndicator[0] != 0x00 {
+		return nil, errors.New("tar: invalid XZ index indicator")
+	}
+
+	numRecords, err := readVLI(sr)
+	if err != nil {
+		return nil, err
+	}
+
+	offsets := make([]BlockOffset, numRecords)
+	var currComp int64 = 12
+	var currUncomp int64 = 0
+
+	for i := uint64(0); i < numRecords; i++ {
+		unpaddedSize, err := readVLI(sr)
+		if err != nil {
+			return nil, err
+		}
+		uncompressedSize, err := readVLI(sr)
+		if err != nil {
+			return nil, err
+		}
+
+		offsets[i] = BlockOffset{
+			BlockOffset: currComp,
+			DataOffset:  currUncomp,
+		}
+
+		paddedSize := (unpaddedSize + 3) &^ 3
+		currComp += int64(paddedSize)
+		currUncomp += int64(uncompressedSize)
+	}
+
+	return offsets, nil
 }
 
 func (t *TarFS) Close() error {
@@ -90,6 +186,42 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 	decompressorObj := di.(Decompressor)
 
 	var dcomp io.ReadCloser
+
+	// O(1) Fast path: XZ native index block lookup
+	if t.method == XZ && len(t.xzBlocks) > 0 {
+		var best *BlockOffset
+		for i := range t.xzBlocks {
+			if t.xzBlocks[i].DataOffset <= node.Offset {
+				if best == nil || t.xzBlocks[i].DataOffset > best.DataOffset {
+					best = &t.xzBlocks[i]
+				}
+			}
+		}
+
+		if best != nil {
+			var header [12]byte
+			_, err = f.ReadAt(header[:], 0)
+			if err == nil {
+				sr := io.NewSectionReader(f, best.BlockOffset, 1<<63-1)
+				mr := io.MultiReader(bytes.NewReader(header[:]), sr)
+				xr, err := xz.NewReader(mr)
+				if err == nil {
+					dcomp = io.NopCloser(xr)
+					remaining := node.Offset - best.DataOffset
+					if remaining > 0 {
+						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
+							dcomp.Close()
+							f.Close()
+							return nil, err
+						}
+					}
+
+					lr := io.LimitReader(dcomp, node.Size)
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
+				}
+			}
+		}
+	}
 
 	// O(1) Fast path: ZSTD / BZIP2 block offset lookup
 	table := ""
