@@ -134,6 +134,28 @@ func TestFSEdgeCases(t *testing.T) {
 	}
 }
 
+func TestExtractor_ZipBomb(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "bomb.tar")
+	dstDir := filepath.Join(tmpDir, "extract")
+
+	// Create archive with large file
+	f, _ := os.Create(archivePath)
+	tw := NewWriter(f)
+	hdr := &Header{Name: "bomb.txt", Size: 2048, Mode: 0644}
+	tw.WriteHeader(hdr)
+	tw.Write(make([]byte, 2048))
+	tw.Close()
+	f.Close()
+
+	// Limit to 1024 bytes
+	e, _ := NewExtractor(archivePath, dstDir, WithExtractorMaxFileSize(1024))
+	err := e.Extract(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "exceeds limit") {
+		t.Errorf("expected size limit error, got: %v", err)
+	}
+}
+
 // TestUpdaterEmptyArchive tests if Updater correctly handles 0-byte initial archives.
 func TestUpdaterEmptyArchive(t *testing.T) {
 	tmpDir := t.TempDir()

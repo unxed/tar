@@ -16,13 +16,29 @@ import (
 type ExtractorOption func(*extractorOptions) error
 
 type extractorOptions struct {
-	concurrency       int
-	chownErrorHandler func(name string, err error) error
+	concurrency           int
+	chownErrorHandler     func(name string, err error) error
+	maxFileSize           int64
+	maxDecompressionRatio int64
 }
 
 func WithExtractorConcurrency(n int) ExtractorOption {
 	return func(o *extractorOptions) error {
 		o.concurrency = n
+		return nil
+	}
+}
+
+func WithExtractorMaxFileSize(n int64) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.maxFileSize = n
+		return nil
+	}
+}
+
+func WithExtractorMaxRatio(n int64) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.maxDecompressionRatio = n
 		return nil
 	}
 }
@@ -57,7 +73,9 @@ func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor,
 		rc:     rc,
 		chroot: chroot,
 		options: extractorOptions{
-			concurrency: runtime.GOMAXPROCS(0),
+			concurrency:           runtime.GOMAXPROCS(0),
+			maxFileSize:           1024 * 1024 * 1024, // 1GB default
+			maxDecompressionRatio: 200,                // 200:1 default
 		},
 	}
 
@@ -130,14 +148,22 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		case TypeReg, TypeRegA:
 			os.MkdirAll(filepath.Dir(path), 0777)
 
+			// Protection against ZIP/TAR bombs: check header size and actual data read
+			if e.options.maxFileSize > 0 && hdr.Size > e.options.maxFileSize {
+				return fmt.Errorf("tar: file %q size %d exceeds limit %d", hdr.Name, hdr.Size, e.options.maxFileSize)
+			}
+
 			// We must read the file sequentially from the stream.
-			// To parallelize disk I/O, we buffer into memory (or temp file for huge files).
-			// For simplicity and speed in this iteration, we buffer up to a certain size.
 			var data []byte
 			if hdr.Size > 0 {
-				data, err = io.ReadAll(io.LimitReader(e.rc, hdr.Size))
+				lr := io.LimitReader(e.rc, hdr.Size)
+				data, err = io.ReadAll(lr)
 				if err != nil {
 					return err
+				}
+
+				if e.options.maxDecompressionRatio > 0 && int64(len(data)) > e.options.maxDecompressionRatio*hdr.Size {
+					return fmt.Errorf("tar: file %q suspicious compression ratio", hdr.Name)
 				}
 			}
 
