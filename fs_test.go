@@ -96,6 +96,7 @@ func TestTarFS_DefaultCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tfs.Close()
+	defer os.Remove(tfs.IndexPath)
 
 	if tfs.IndexPath == "" {
 		t.Error("Expected automatic IndexPath to be non-empty")
