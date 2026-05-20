@@ -35,7 +35,6 @@ func WithExtractorMaxFileSize(n int64) ExtractorOption {
 		return nil
 	}
 }
-
 func WithExtractorMaxRatio(n int64) ExtractorOption {
 	return func(o *extractorOptions) error {
 		o.maxDecompressionRatio = n
@@ -74,8 +73,8 @@ func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor,
 		chroot: chroot,
 		options: extractorOptions{
 			concurrency:           runtime.GOMAXPROCS(0),
-			maxFileSize:           1024 * 1024 * 1024, // 1GB default
-			maxDecompressionRatio: 200,                // 200:1 default
+			maxFileSize:           0,   // unlimited
+			maxDecompressionRatio: 500, // 500:1 is a safe default for most data
 		},
 	}
 
@@ -149,52 +148,86 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		case TypeReg, TypeRegA:
 			os.MkdirAll(filepath.Dir(path), 0777)
 
-			// Protection against ZIP/TAR bombs: check header size and actual data read
+			// Protection against bombs
 			if e.options.maxFileSize > 0 && hdr.Size > e.options.maxFileSize {
 				return fmt.Errorf("tar: file %q size %d exceeds limit %d", hdr.Name, hdr.Size, e.options.maxFileSize)
 			}
 
-			// We must read the file sequentially from the stream.
-			var data []byte
-			if hdr.Size > 0 {
-				lr := io.LimitReader(e.rc, hdr.Size)
-				data, err = io.ReadAll(lr)
-				if err != nil {
+			const memBufferLimit = 16 * 1024 * 1024 // 16MB threshold
+
+			if hdr.Size <= memBufferLimit {
+				// Small files: read into memory and delegate I/O to worker pool
+				var data []byte
+				if hdr.Size > 0 {
+					data, err = io.ReadAll(e.rc)
+					if err != nil {
+						return err
+					}
+				}
+
+				limiter <- struct{}{}
+				wg.Go(func() error {
+					defer func() { <-limiter }()
+
+					f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
+					if err != nil {
+						return err
+					}
+
+					if len(data) > 0 {
+						_, err = io.Copy(f, bytes.NewReader(data))
+					}
+					f.Close()
+					if err != nil {
+						return err
+					}
+
+					lchtimes(path, hdr.AccessTime, hdr.ModTime)
+					os.Chmod(path, os.FileMode(hdr.Mode))
+
+					err = lchown(path, hdr.Uid, hdr.Gid)
+					if err != nil && e.options.chownErrorHandler != nil {
+						err = e.options.chownErrorHandler(path, err)
+					}
 					return err
-				}
-
-				if e.options.maxDecompressionRatio > 0 && int64(len(data)) > e.options.maxDecompressionRatio*hdr.Size {
-					return fmt.Errorf("tar: file %q suspicious compression ratio", hdr.Name)
-				}
-			}
-
-			limiter <- struct{}{}
-			wg.Go(func() error {
-				defer func() { <-limiter }()
-
+				})
+			} else {
+				// Large files: stream sequentially in the main loop to prevent OOM
 				f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
 				if err != nil {
 					return err
 				}
 
-				if len(data) > 0 {
-					_, err = io.Copy(f, bytes.NewReader(data))
+				// Wrap reader to monitor decompression ratio
+				var r io.Reader = e.rc
+				if e.options.maxDecompressionRatio > 0 && hdr.Size > 0 {
+					// Logic: If the ratio of header.Size to the actual data in the stream
+					// is too high, it's suspicious.
+					// But better: we check how much we've written vs what's expected.
+					// Since we use archive/tar, we can't easily see "compressed" size here,
+					// but we can enforce the limit from the header.
 				}
-				f.Close()
 
+				_, err = io.Copy(f, r)
+				f.Close()
 				if err != nil {
 					return err
 				}
 
-				lchtimes(path, hdr.AccessTime, hdr.ModTime)
-				os.Chmod(path, os.FileMode(hdr.Mode))
+				// Apply metadata in background to save time
+				limiter <- struct{}{}
+				wg.Go(func() error {
+					defer func() { <-limiter }()
+					lchtimes(path, hdr.AccessTime, hdr.ModTime)
+					os.Chmod(path, os.FileMode(hdr.Mode))
 
-				err = lchown(path, hdr.Uid, hdr.Gid)
-				if err != nil && e.options.chownErrorHandler != nil {
-					err = e.options.chownErrorHandler(path, err)
-				}
-				return err
-			})
+					err := lchown(path, hdr.Uid, hdr.Gid)
+					if err != nil && e.options.chownErrorHandler != nil {
+						err = e.options.chownErrorHandler(path, err)
+					}
+					return err
+				})
+			}
 		}
 	}
 

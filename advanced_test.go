@@ -2,6 +2,7 @@ package tar
 
 import (
 	"context"
+	"bytes"
 	"fmt"
 	"io"
 	"io/fs"
@@ -452,5 +453,54 @@ func TestUpdater_NoTrailingZeroBlocks(t *testing.T) {
 
 	if len(names) != 2 || names[0] != "first.txt" || names[1] != "second.txt" {
 		t.Errorf("Expected files ['first.txt', 'second.txt'], got %v", names)
+	}
+}
+func TestExtractor_LargeFileHybrid(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "large.tar")
+	dstDir := filepath.Join(tmpDir, "extract")
+
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := NewWriter(f)
+
+	// 17MB file to trigger the synchronous direct-to-disk branch (> 16MB threshold)
+	size := int64(17 * 1024 * 1024)
+	hdr := &Header{Name: "large.txt", Size: size, Mode: 0644}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write dummy data in chunks efficiently
+	chunk := bytes.Repeat([]byte("A"), 1024*1024)
+	for i := 0; i < 17; i++ {
+		tw.Write(chunk)
+	}
+	tw.Close()
+	f.Close()
+
+	// Use error handler to ignore chown issues on non-root environments
+	ignoreChown := WithExtractorChownErrorHandler(func(name string, err error) error {
+		return nil
+	})
+	e, err := NewExtractor(archivePath, dstDir, ignoreChown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	err = e.Extract(context.Background())
+	if err != nil {
+		t.Fatalf("Extraction failed for large file: %v", err)
+	}
+
+	fi, err := os.Stat(filepath.Join(dstDir, "large.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != size {
+		t.Errorf("Expected size %d, got %d", size, fi.Size())
 	}
 }
