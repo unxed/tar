@@ -294,6 +294,52 @@ func TestGzipHeaderMetadataParsing(t *testing.T) {
 		t.Errorf("Payload mismatch!\nExpected: %q\nGot:      %q", string(payload), string(decoded))
 	}
 }
+// TestGzipResumeInvalidIndex verifies that ResumeFromGzipIndex returns clean
+// errors when provided with malformed, corrupted, or unsupported GZIDX index data.
+func TestGzipResumeInvalidIndex(t *testing.T) {
+	var di any = gzipFormat{}
+	importer := di.(GzipIndexImporter)
+	dummyPayload := make([]byte, 100)
+
+	// Case 1: Index data too short (less than 35 bytes)
+	shortIndex := []byte("GZIDX")
+	var cmpBuf1 bytes.Buffer
+	gw1 := gzip.NewWriter(&cmpBuf1)
+	gw1.Write(shortIndex)
+	gw1.Close()
+
+	_, _, err := importer.ResumeFromGzipIndex(bytes.NewReader(dummyPayload), cmpBuf1.Bytes(), 0)
+	if err == nil || err.Error() != "tar: invalid GZIDX header" {
+		t.Errorf("Expected 'tar: invalid GZIDX header' error for short index, got: %v", err)
+	}
+
+	// Case 2: Missing "GZIDX" signature magic
+	badMagic := make([]byte, 40)
+	copy(badMagic, "BADMX")
+	var cmpBuf2 bytes.Buffer
+	gw2 := gzip.NewWriter(&cmpBuf2)
+	gw2.Write(badMagic)
+	gw2.Close()
+
+	_, _, err = importer.ResumeFromGzipIndex(bytes.NewReader(dummyPayload), cmpBuf2.Bytes(), 0)
+	if err == nil || err.Error() != "tar: invalid GZIDX header" {
+		t.Errorf("Expected 'tar: invalid GZIDX header' error for bad magic, got: %v", err)
+	}
+
+	// Case 3: Unsupported version flag (e.g. version 2)
+	unsupportedVer := make([]byte, 40)
+	copy(unsupportedVer[:5], "GZIDX")
+	unsupportedVer[5] = 2 // Version 2
+	var cmpBuf3 bytes.Buffer
+	gw3 := gzip.NewWriter(&cmpBuf3)
+	gw3.Write(unsupportedVer)
+	gw3.Close()
+
+	_, _, err = importer.ResumeFromGzipIndex(bytes.NewReader(dummyPayload), cmpBuf3.Bytes(), 0)
+	if err == nil || err.Error() != "tar: unsupported GZIDX version: 2" {
+		t.Errorf("Expected 'tar: unsupported GZIDX version: 2' error, got: %v", err)
+	}
+}
 // TestXzRandomAccess verifies native XZ index parsing and O(1) block-level seeking.
 func TestXzRandomAccess(t *testing.T) {
 	tmpDir := t.TempDir()
