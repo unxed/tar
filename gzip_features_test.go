@@ -165,6 +165,104 @@ func TestGzipResumeWithNoDataPoint(t *testing.T) {
 	}
 }
 
+// TestGzipMultistreamResumption verifies that resuming decompression from a checkpoint
+// with hasData = 1 and a non-zero BitOffset inside a concatenated (multistream) GZIP
+// file successfully reads the remaining stream and transitions to the subsequent streams.
+func TestGzipMultistreamResumption(t *testing.T) {
+	var raw1 bytes.Buffer
+	for i := 0; i < 35000; i++ {
+		raw1.WriteString("the quick brown fox jumps over the lazy dog ")
+	}
+	data1 := raw1.Bytes() // ~1.54 MB to guarantee multiple internal deflate blocks
+	data2 := []byte("stream 2 secondary payload content that follows stream 1")
+
+	// 1. Compress both streams as separate GZIP members (concatenated)
+	var gzipBuf bytes.Buffer
+	gw1 := gzip.NewWriter(&gzipBuf)
+	if _, err := gw1.Write(data1); err != nil {
+		t.Fatal(err)
+	}
+	gw1.Close()
+
+	stream1CompressedLen := int64(gzipBuf.Len())
+
+	gw2 := gzip.NewWriter(&gzipBuf)
+	if _, err := gw2.Write(data2); err != nil {
+		t.Fatal(err)
+	}
+	gw2.Close()
+
+	multistreamGzip := gzipBuf.Bytes()
+
+	// 2. Perform sequential on-the-fly index tracking
+	gtr, err := newGzipIndexTrackingReader(bytes.NewReader(multistreamGzip))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decoded, err := io.ReadAll(gtr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedTotal := append([]byte(nil), data1...)
+	expectedTotal = append(expectedTotal, data2...)
+	if !bytes.Equal(decoded, expectedTotal) {
+		t.Fatal("Initial full decompression mismatch")
+	}
+
+	// 3. Find a target checkpoint inside the first stream with hasData = 1 and non-zero BitOffset
+	var targetPoint *gzPoint
+	for i := range gtr.points {
+		p := &gtr.points[i]
+		if p.hasData == 1 && p.bits > 0 && p.compOffset < uint64(stream1CompressedLen) {
+			targetPoint = p
+			break
+		}
+	}
+
+	if targetPoint == nil {
+		t.Fatal("Could not find a suitable checkpoint with hasData = 1 and non-zero BitOffset inside Stream 1")
+	}
+	t.Logf("Selected checkpoint: compOffset=%d, uncompOffset=%d, bits=%d",
+		targetPoint.compOffset, targetPoint.uncompOffset, targetPoint.bits)
+
+	// 4. Export index data and resume decompression from selected point
+	idxBytes, err := gtr.ExportGzipIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var di any = gzipFormat{}
+	importer := di.(GzipIndexImporter)
+
+	resReader, uncompOffset, err := importer.ResumeFromGzipIndex(
+		bytes.NewReader(multistreamGzip),
+		idxBytes,
+		int64(targetPoint.uncompOffset),
+	)
+	if err != nil {
+		t.Fatalf("Failed to resume from GZIP index: %v", err)
+	}
+	defer resReader.Close()
+
+	if uncompOffset != int64(targetPoint.uncompOffset) {
+		t.Errorf("Resumed uncompOffset mismatch: expected %d, got %d", targetPoint.uncompOffset, uncompOffset)
+	}
+
+	resDecoded, err := io.ReadAll(resReader)
+	if err != nil {
+		t.Fatalf("Failed to read from resumed stream: %v", err)
+	}
+
+	// 5. Verify the correctness of returned stream suffix across stream boundaries
+	expectedResumed := append([]byte(nil), data1[targetPoint.uncompOffset:]...)
+	expectedResumed = append(expectedResumed, data2...)
+
+	if !bytes.Equal(resDecoded, expectedResumed) {
+		t.Fatalf("Resumed stream data mismatch: expected length %d, got %d", len(expectedResumed), len(resDecoded))
+	}
+}
 // TestXzRandomAccess verifies native XZ index parsing and O(1) block-level seeking.
 func TestXzRandomAccess(t *testing.T) {
 	tmpDir := t.TempDir()
