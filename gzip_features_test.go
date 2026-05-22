@@ -263,6 +263,37 @@ func TestGzipMultistreamResumption(t *testing.T) {
 		t.Fatalf("Resumed stream data mismatch: expected length %d, got %d", len(expectedResumed), len(resDecoded))
 	}
 }
+// TestGzipHeaderMetadataParsing verifies that the manual GZIP header parser
+// in gzipIndexTrackingReader successfully skips FEXTRA, FNAME, and FCOMMENT fields
+// and correctly extracts the underlying deflate stream.
+func TestGzipHeaderMetadataParsing(t *testing.T) {
+	var gzipBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzipBuf)
+	gw.Name = "backup_archive_2026.tar"
+	gw.Comment = "this is an industrial strength backup payload"
+	gw.Extra = []byte{0x41, 0x42, 0x02, 0x00, 0xde, 0xad} // ID: AB, Len: 2, Data: 0xdead
+
+	payload := []byte("confidential target file content that sits right behind multiple gzip header fields")
+	if _, err := gw.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	gw.Close()
+
+	gtr, err := newGzipIndexTrackingReader(bytes.NewReader(gzipBuf.Bytes()))
+	if err != nil {
+		t.Fatalf("Failed to initialize tracking reader with metadata headers: %v", err)
+	}
+	defer gtr.Close()
+
+	decoded, err := io.ReadAll(gtr)
+	if err != nil {
+		t.Fatalf("Failed to decompress stream containing metadata headers: %v", err)
+	}
+
+	if !bytes.Equal(decoded, payload) {
+		t.Errorf("Payload mismatch!\nExpected: %q\nGot:      %q", string(payload), string(decoded))
+	}
+}
 // TestXzRandomAccess verifies native XZ index parsing and O(1) block-level seeking.
 func TestXzRandomAccess(t *testing.T) {
 	tmpDir := t.TempDir()
