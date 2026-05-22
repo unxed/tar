@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"io/fs"
 	"os"
-	"io"
-	"fmt"
 	"path/filepath"
 	"testing"
 	"encoding/binary"
@@ -281,49 +279,6 @@ func TestCacheCompatibility(t *testing.T) {
 		}
 	}
 }
-
-// TestBitShiftingReader mathematically verifies that our LSB-first bit-shifting
-// reader works with 100% accuracy for all 7 possible bit-offsets.
-func TestBitShiftingReader(t *testing.T) {
-	original := []byte("The quick brown fox jumps over the lazy dog. 1234567890! Emojis: 😀🔥🚀")
-
-	for shift := uint8(1); shift < 8; shift++ {
-		t.Run(fmt.Sprintf("BitShift_%d", shift), func(t *testing.T) {
-			// 1. Manually encode (shift) the original byte stream LSB-first by 'shift' bits.
-			encoded := make([]byte, len(original)+1)
-
-			// Preset a dummy byte before our compressed offset (simulating the byte before comp_offset)
-			prev := byte(0xAA)
-			// Clear the highest 'shift' bits of prev so they can be cleanly written over (LSB-first)
-			mask := byte((1 << shift) - 1)
-			encoded[0] = prev & mask
-
-			// Shift original bits across byte boundaries (LSB-first)
-			for i := 0; i < len(original); i++ {
-				encoded[i] |= original[i] << shift
-				encoded[i+1] |= original[i] >> (8 - shift)
-			}
-
-			// 2. Decode using our pure-Go bitShiftingReader
-			sr := bytes.NewReader(encoded[1:]) // Seek to comp_offset (index 1)
-			bsr := &bitShiftingReader{
-				r:     sr,
-				shift: shift,
-				prev:  encoded[0], // The byte at comp_offset - 1 (index 0)
-			}
-
-			decoded, err := io.ReadAll(bsr)
-			if err != nil {
-				t.Fatalf("Failed to read shifted stream: %v", err)
-			}
-
-			if !bytes.Equal(decoded, original) {
-				t.Errorf("Decoded content mismatch!\nExpected: %q\nGot:      %q", string(original), string(decoded))
-			}
-		})
-	}
-}
-
 // TestGzipFastPath verifies that TarFS successfully performs O(1) random-access
 // seeking in GZIP archives by index-checkpointing on pure Go without CGO.
 func TestGzipFastPath(t *testing.T) {

@@ -4,16 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"compress/bzip2"
-	stdgzip "compress/gzip"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"runtime"
-	"strings"
 	"sync"
-	"unsafe"
 
 	"github.com/klauspost/compress/flate"
 	"github.com/klauspost/compress/gzip"
@@ -69,7 +65,7 @@ func (gzipFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
 }
 
 type trackingByteReader struct {
-	r   io.Reader
+	r   *bufio.Reader
 	pos int64
 }
 
@@ -78,6 +74,15 @@ func (t *trackingByteReader) Read(p []byte) (n int, err error) {
 	t.pos += int64(n)
 	return n, err
 }
+
+func (t *trackingByteReader) ReadByte() (byte, error) {
+	b, err := t.r.ReadByte()
+	if err == nil {
+		t.pos++
+	}
+	return b, err
+}
+
 type trackingWriter struct {
 	w   io.Writer
 	pos int64
@@ -89,37 +94,25 @@ func (t *trackingWriter) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (t *trackingByteReader) ReadByte() (byte, error) {
-	var buf [1]byte
-	n, err := t.Read(buf[:])
-	if n == 1 {
-		return buf[0], nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return 0, io.EOF
-}
-
 type gzipIndexTrackingReader struct {
-	r              io.ReadCloser
-	trackReader    *trackingByteReader
-	uncompOffset   int64
-	spacing        int64
-	points         []gzPoint
-	lastCheckpoint int64
+	tr               *trackingByteReader
+	fr               io.ReadCloser
+	streamCompBase   int64
+	streamUncompBase int64
+	uncompOffset     int64
+	spacing          int64
+	points           []gzPoint
+	lastCheckpoint   int64
+	eof              bool
+	err              error
 }
 
 func newGzipIndexTrackingReader(r io.Reader) (*gzipIndexTrackingReader, error) {
-	tr := &trackingByteReader{r: r}
-	gz, err := stdgzip.NewReader(tr)
-	if err != nil {
-		return nil, err
-	}
+	br := bufio.NewReader(r)
+	tr := &trackingByteReader{r: br}
 	gtr := &gzipIndexTrackingReader{
-		r:            gz,
-		trackReader:  tr,
-		spacing:      1024 * 1024, // 1MB standard spacing
+		tr:      tr,
+		spacing: 1024 * 1024, // 1MB standard spacing
 		points: []gzPoint{
 			{
 				compOffset:   0,
@@ -129,164 +122,158 @@ func newGzipIndexTrackingReader(r io.Reader) (*gzipIndexTrackingReader, error) {
 			},
 		},
 	}
+	if err := gtr.nextStream(); err != nil {
+		return nil, err
+	}
 	return gtr, nil
 }
 
-func (g *gzipIndexTrackingReader) Read(p []byte) (n int, err error) {
-	for i := 0; i < len(p); i++ {
-		var buf [1]byte
-		n1, err1 := g.r.Read(buf[:])
-		if n1 > 0 {
-			p[i] = buf[0]
-			n++
-			g.uncompOffset++
-
-			if g.uncompOffset-g.lastCheckpoint >= g.spacing {
-				if g.isAtBlockBoundary() {
-					g.captureCheckpoint()
-				}
-			}
+func (g *gzipIndexTrackingReader) nextStream() error {
+	var hdr [10]byte
+	if _, err := io.ReadFull(g.tr, hdr[:]); err != nil {
+		if err == io.EOF {
+			return io.EOF
 		}
-		if err1 != nil {
-			return n, err1
+		return err
+	}
+	if hdr[0] != 0x1f || hdr[1] != 0x8b {
+		return errors.New("tar: invalid gzip magic")
+	}
+	if hdr[2] != 8 {
+		return errors.New("tar: unsupported gzip method")
+	}
+	flg := hdr[3]
+
+	if flg&0x04 != 0 {
+		var xlen [2]byte
+		if _, err := io.ReadFull(g.tr, xlen[:]); err != nil {
+			return err
+		}
+		ln := int(xlen[0]) | (int(xlen[1]) << 8)
+		if _, err := io.CopyN(io.Discard, g.tr, int64(ln)); err != nil {
+			return err
 		}
 	}
-	return n, nil
+	if flg&0x08 != 0 {
+		if err := g.readNullTerminated(); err != nil {
+			return err
+		}
+	}
+	if flg&0x10 != 0 {
+		if err := g.readNullTerminated(); err != nil {
+			return err
+		}
+	}
+	if flg&0x02 != 0 {
+		var crc [2]byte
+		if _, err := io.ReadFull(g.tr, crc[:]); err != nil {
+			return err
+		}
+	}
+
+	g.streamCompBase = g.tr.pos
+	g.streamUncompBase = g.uncompOffset
+
+	cb := func(cp flate.InflateCheckpoint) {
+		absUncomp := g.streamUncompBase + cp.UncompressedOffset
+		absComp := g.streamCompBase + cp.CompressedOffset
+
+		if absUncomp-g.lastCheckpoint >= g.spacing {
+			win := make([]byte, 32768)
+			if len(cp.Window) > 0 {
+				copy(win[32768-len(cp.Window):], cp.Window)
+			}
+			g.points = append(g.points, gzPoint{
+				compOffset:   uint64(absComp),
+				uncompOffset: uint64(absUncomp),
+				bits:         cp.BitOffset,
+				hasData:      1,
+				window:       win,
+			})
+			g.lastCheckpoint = absUncomp
+		}
+	}
+
+	g.fr = flate.NewReaderOpts(g.tr, flate.WithEobCallback(cb))
+	return nil
 }
 
-var boundaryPCs sync.Map // Map of uintptr -> bool
-
-func (g *gzipIndexTrackingReader) isAtBlockBoundary() bool {
-	defer func() {
-		_ = recover()
-	}()
-
-	stdGzReaderVal := reflect.ValueOf(g.r).Elem()
-	decompressorField := stdGzReaderVal.FieldByName("decompressor")
-	if !decompressorField.IsValid() {
-		return false
-	}
-	decompressorVal := reflect.NewAt(decompressorField.Type(), unsafe.Pointer(decompressorField.UnsafeAddr())).Elem()
-	if decompressorVal.IsNil() {
-		return false
-	}
-
-	flateDecompressorPtr := decompressorVal.Elem()
-	if flateDecompressorPtr.Kind() != reflect.Ptr {
-		return false
-	}
-	flateDecompressorVal := flateDecompressorPtr.Elem()
-
-	stepField := flateDecompressorVal.FieldByName("step")
-	if stepField.IsValid() {
-		pc := stepField.Pointer()
-		if pc == 0 {
-			return false
+func (g *gzipIndexTrackingReader) readNullTerminated() error {
+	for {
+		b, err := g.tr.ReadByte()
+		if err != nil {
+			return err
 		}
-
-		// O(1) Fast path: check cached PC values
-		if val, ok := boundaryPCs.Load(pc); ok {
-			return val.(bool)
-		}
-
-		// O(N) Slow path: look up name once and cache it
-		fn := runtime.FuncForPC(pc)
-		if fn != nil {
-			name := fn.Name()
-			isBoundary := strings.Contains(name, "readBlockHeader") || strings.Contains(name, "nextBlock")
-			boundaryPCs.Store(pc, isBoundary)
-			return isBoundary
+		if b == 0 {
+			return nil
 		}
 	}
-	return false
+}
+
+func (g *gzipIndexTrackingReader) Read(p []byte) (n int, err error) {
+	if g.eof {
+		return 0, io.EOF
+	}
+	if g.err != nil {
+		return 0, g.err
+	}
+
+	n, err = g.fr.Read(p)
+	g.uncompOffset += int64(n)
+
+	if err == io.EOF {
+		g.fr.Close()
+
+		var trailer [8]byte
+		if _, terr := io.ReadFull(g.tr, trailer[:]); terr != nil {
+			g.err = terr
+			if n > 0 {
+				return n, nil
+			}
+			return 0, terr
+		}
+
+		newHeaderOffset := g.tr.pos
+
+		terr := g.nextStream()
+		if terr == io.EOF || terr == io.ErrUnexpectedEOF {
+			g.eof = true
+			if n > 0 {
+				return n, nil
+			}
+			return 0, io.EOF
+		}
+		if terr != nil {
+			g.err = terr
+			if n > 0 {
+				return n, nil
+			}
+			return 0, terr
+		}
+
+		g.points = append(g.points, gzPoint{
+			compOffset:   uint64(newHeaderOffset),
+			uncompOffset: uint64(g.uncompOffset),
+			bits:         0,
+			hasData:      0,
+		})
+		g.lastCheckpoint = g.uncompOffset
+
+		return n, nil
+	}
+
+	return n, err
 }
 
 func (g *gzipIndexTrackingReader) Close() error {
-	return g.r.Close()
-}
-
-func (g *gzipIndexTrackingReader) captureCheckpoint() {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Printf("[GZIDX] Panic in captureCheckpoint: %v\n", r)
-		}
-	}()
-
-	stdGzReaderVal := reflect.ValueOf(g.r).Elem()
-	decompressorField := stdGzReaderVal.FieldByName("decompressor")
-	if !decompressorField.IsValid() {
-		return
+	if g.fr != nil {
+		return g.fr.Close()
 	}
-	decompressorVal := reflect.NewAt(decompressorField.Type(), unsafe.Pointer(decompressorField.UnsafeAddr())).Elem()
-	if decompressorVal.IsNil() {
-		return
-	}
-
-	flateDecompressorPtr := decompressorVal.Elem()
-	if flateDecompressorPtr.Kind() != reflect.Ptr {
-		return
-	}
-	flateDecompressorVal := flateDecompressorPtr.Elem()
-
-	nbField := flateDecompressorVal.FieldByName("nb")
-	if !nbField.IsValid() {
-		return
-	}
-	nbVal := reflect.NewAt(nbField.Type(), unsafe.Pointer(nbField.UnsafeAddr())).Elem()
-	nb := nbVal.Interface().(uint)
-
-	// Get buffered bytes from bufio.Reader
-	var buffered int
-	rBufField := flateDecompressorVal.FieldByName("rBuf")
-	if rBufField.IsValid() {
-		rBufVal := reflect.NewAt(rBufField.Type(), unsafe.Pointer(rBufField.UnsafeAddr())).Elem()
-		if !rBufVal.IsNil() {
-			bufReader := rBufVal.Interface().(*bufio.Reader)
-			buffered = bufReader.Buffered()
-		}
-	}
-
-	totalBits := (g.trackReader.pos - int64(buffered))*8 - int64(nb)
-	compOffset := uint64(totalBits / 8)
-	bits := uint8(totalBits % 8)
-
-	dictField := flateDecompressorVal.FieldByName("dict")
-	if !dictField.IsValid() {
-		return
-	}
-
-	histField := dictField.FieldByName("hist")
-	if !histField.IsValid() {
-		return
-	}
-	histVal := reflect.NewAt(histField.Type(), unsafe.Pointer(histField.UnsafeAddr())).Elem()
-	histBytes := histVal.Interface().([]byte)
-
-	wrField := dictField.FieldByName("wrPos")
-	if !wrField.IsValid() {
-		return
-	}
-	wrVal := reflect.NewAt(wrField.Type(), unsafe.Pointer(wrField.UnsafeAddr())).Elem()
-	wr := wrVal.Interface().(int)
-
-	window := make([]byte, 32768)
-	if len(histBytes) == 32768 {
-		copy(window, histBytes[wr:])
-		copy(window[32768-wr:], histBytes[:wr])
-	}
-
-	g.points = append(g.points, gzPoint{
-		compOffset:   compOffset,
-		uncompOffset: uint64(g.uncompOffset),
-		bits:         bits,
-		hasData:      1,
-		window:       window,
-	})
-	g.lastCheckpoint = g.uncompOffset
+	return nil
 }
 
 func (g *gzipIndexTrackingReader) ExportGzipIndex() ([]byte, error) {
-	compSize := g.trackReader.pos
+	compSize := g.tr.pos
 	uncompSize := g.uncompOffset
 
 	gzidxBuf := new(bytes.Buffer)
@@ -314,7 +301,7 @@ func (g *gzipIndexTrackingReader) ExportGzipIndex() ([]byte, error) {
 	}
 
 	var cmpBuf bytes.Buffer
-	gw := stdgzip.NewWriter(&cmpBuf)
+	gw := gzip.NewWriter(&cmpBuf)
 	_, err := gw.Write(gzidxBuf.Bytes())
 	if err != nil {
 		return nil, err
@@ -324,37 +311,47 @@ func (g *gzipIndexTrackingReader) ExportGzipIndex() ([]byte, error) {
 	return cmpBuf.Bytes(), nil
 }
 
-type bitShiftingReader struct {
-	r     io.Reader
-	shift uint8
-	prev  byte
-}
-
-func (b *bitShiftingReader) Read(p []byte) (n int, err error) {
-	if b.shift == 0 {
-		return b.r.Read(p)
-	}
-
-	tmp := make([]byte, len(p))
-	tn, terr := b.r.Read(tmp)
-	if tn == 0 {
-		return 0, terr
-	}
-
-	for i := 0; i < tn; i++ {
-		curr := tmp[i]
-		p[i] = (b.prev >> b.shift) | (curr << (8 - b.shift))
-		b.prev = curr
-	}
-	return tn, terr
-}
-
 type gzPoint struct {
 	compOffset   uint64
 	uncompOffset uint64
 	bits         uint8
 	hasData      uint8
 	window       []byte
+}
+
+type resumedGzipReader struct {
+	br      *bufio.Reader
+	tbr     *trackingByteReader
+	current io.ReadCloser
+	isFlate bool
+}
+
+func (rg *resumedGzipReader) Read(p []byte) (n int, err error) {
+	n, err = rg.current.Read(p)
+	if err == io.EOF && rg.isFlate {
+		rg.current.Close()
+
+		var trailer [8]byte
+		if _, terr := io.ReadFull(rg.br, trailer[:]); terr != nil {
+			return n, terr
+		}
+
+		nextStream, terr := gzip.NewReader(rg.br)
+		if terr != nil {
+			if terr == io.EOF || terr == io.ErrUnexpectedEOF {
+				return n, io.EOF
+			}
+			return n, terr
+		}
+		rg.current = nextStream
+		rg.isFlate = false
+		return n, nil
+	}
+	return n, err
+}
+
+func (rg *resumedGzipReader) Close() error {
+	return rg.current.Close()
 }
 
 func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOffset int64) (io.ReadCloser, int64, error) {
@@ -410,36 +407,36 @@ func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOff
 	}
 
 	seekOffset := int64(best.compOffset)
-	if best.bits > 0 {
-		seekOffset -= 1
-	}
+	sr := io.NewSectionReader(r, seekOffset, 1<<63-1)
+	br := bufio.NewReader(sr)
 
 	if best.hasData == 0 {
-		sr := io.NewSectionReader(r, seekOffset, 1<<63-1)
-		gr, err := gzip.NewReader(sr)
+		gr, err := gzip.NewReader(br)
 		if err != nil {
 			return nil, 0, err
 		}
 		return gr, int64(best.uncompOffset), nil
 	}
 
-	sr := io.NewSectionReader(r, seekOffset, 1<<63-1)
-	var reader io.Reader = sr
-
-	if best.bits > 0 {
-		var ch [1]byte
-		if _, err := sr.Read(ch[:]); err != nil {
-			return nil, 0, err
-		}
-		reader = &bitShiftingReader{
-			r:     sr,
-			shift: best.bits,
-			prev:  ch[0],
-		}
+	cp := flate.InflateCheckpoint{
+		UncompressedOffset: int64(best.uncompOffset),
+		CompressedOffset:   seekOffset,
+		Final:              false,
+		BitOffset:          best.bits,
+		Window:             best.window,
 	}
 
-	fr := flate.NewReaderDict(reader, best.window)
-	return fr, int64(best.uncompOffset), nil
+	tbr := &trackingByteReader{r: br, pos: seekOffset}
+	fr := flate.NewReaderOpts(tbr, flate.WithResumeFrom(cp))
+
+	rg := &resumedGzipReader{
+		br:      br,
+		tbr:     tbr,
+		current: fr,
+		isFlate: true,
+	}
+
+	return rg, int64(best.uncompOffset), nil
 }
 
 // -- BZIP2 --

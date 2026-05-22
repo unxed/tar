@@ -193,10 +193,10 @@ func (wc *WriteCloser) Close() error {
 		if wc.method == GZIP && len(wc.gzPoints) > 0 {
 			// Construct GZIDX blob
 			gzidx := &gzipIndexTrackingReader{
-				points:      wc.gzPoints,
+				points:       wc.gzPoints,
 				uncompOffset: wc.uncompTracker.pos,
-				spacing:     4 * 1024 * 1024,
-				trackReader: &trackingByteReader{pos: wc.compTracker.pos},
+				spacing:      4 * 1024 * 1024,
+				tr:           &trackingByteReader{pos: wc.compTracker.pos},
 			}
 			if data, err := gzidx.ExportGzipIndex(); err == nil {
 				wc.idx.SaveGzipIndex(data)
