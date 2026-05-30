@@ -111,6 +111,8 @@ func IndexArchive(archivePath, indexPath string) error {
 			LinkName:     hdr.Linkname,
 			Uid:          hdr.Uid,
 			Gid:          hdr.Gid,
+			IsSparse:     hdr.Typeflag == TypeGNUSparse || hdr.Typeflag == 'S',
+			IsTar:        true,
 		}
 		batch = append(batch, node)
 

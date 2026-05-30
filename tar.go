@@ -35,6 +35,7 @@ const (
 	TypeGNUSparse     = tar.TypeGNUSparse
 	TypeGNULongName   = tar.TypeGNULongName
 	TypeGNULongLink   = tar.TypeGNULongLink
+	TypeVol           = 'V' // GNUTYPE_VOLHDR (Volume header)
 )
 
 const (

@@ -20,6 +20,8 @@ type extractorOptions struct {
 	chownErrorHandler     func(name string, err error) error
 	maxFileSize           int64
 	maxDecompressionRatio int64
+	keepOldFiles          bool
+	keepNewerFiles        bool
 }
 
 func WithExtractorConcurrency(n int) ExtractorOption {
@@ -38,6 +40,21 @@ func WithExtractorMaxFileSize(n int64) ExtractorOption {
 func WithExtractorMaxRatio(n int64) ExtractorOption {
 	return func(o *extractorOptions) error {
 		o.maxDecompressionRatio = n
+		return nil
+	}
+}
+// WithExtractorKeepOldFiles prevents overwriting existing files (-k or --keep-old-files)
+func WithExtractorKeepOldFiles(keep bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.keepOldFiles = keep
+		return nil
+	}
+}
+
+// WithExtractorKeepNewerFiles prevents overwriting files that are newer on disk (--keep-newer-files)
+func WithExtractorKeepNewerFiles(keep bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.keepNewerFiles = keep
 		return nil
 	}
 }
@@ -119,8 +136,26 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		// Overwrite control policies (GNU/BSD tar compatibility)
+		if hdr.Typeflag != TypeDir && hdr.Typeflag != TypeXGlobalHeader && hdr.Typeflag != TypeVol {
+			if e.options.keepOldFiles {
+				if _, err := os.Stat(path); err == nil {
+					continue // Skip extracting, file already exists
+				}
+			}
+			if e.options.keepNewerFiles {
+				if fi, err := os.Stat(path); err == nil {
+					if fi.ModTime().After(hdr.ModTime) {
+						continue // Skip extracting, disk file is newer
+					}
+				}
+			}
+		}
 
 		switch hdr.Typeflag {
+		case TypeXGlobalHeader, TypeVol:
+			// Ignore global extended headers and volume labels (GNU extensions) for extraction
+			continue
 		case TypeDir:
 			os.MkdirAll(path, 0777)
 			dirs[path] = hdr
