@@ -265,6 +265,11 @@ func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor,
 			concurrency:           runtime.GOMAXPROCS(0),
 			maxFileSize:           0,   // unlimited
 			maxDecompressionRatio: 500, // 500:1 is a safe default for most data
+			xattrs:                true,
+			chownErrorHandler: func(name string, err error) error {
+				fmt.Fprintf(os.Stderr, "tar: %s: %v (continuing)\n", name, err)
+				return nil
+			},
 		},
 	}
 

@@ -57,8 +57,9 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 
 	a := &Archiver{
 		options: archiverOptions{
-			method: Store,
+			method: GZIP,
 			chroot: chroot,
+			xattrs: true,
 		},
 		seenHardLinks: make(map[hardlinkKey]string),
 	}
