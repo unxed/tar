@@ -3,11 +3,12 @@
 
 package tar
 
-import "golang.org/x/sys/unix"
-
 import (
 	"archive/tar"
+	"os/user"
+	"strconv"
 	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -26,12 +27,14 @@ func sysXattrs(path string, hdr *tar.Header) error {
 	}
 
 	for _, n := range namespaces {
-		sz, err := unix.ExtattrListLink(n.ns, path, nil)
+		// 1. Query size of list (passing 0 and 0 under FreeBSD API)
+		sz, err := unix.ExtattrListLink(path, n.ns, 0, 0)
 		if err != nil || sz <= 0 {
 			continue
 		}
+
 		buf := make([]byte, sz)
-		sz, err = unix.ExtattrListLink(n.ns, path, buf)
+		sz, err = unix.ExtattrListLink(path, n.ns, uintptr(unsafe.Pointer(&buf[0])), len(buf))
 		if err != nil {
 			continue
 		}
@@ -50,12 +53,14 @@ func sysXattrs(path string, hdr *tar.Header) error {
 			key := string(buf[i : i+l])
 			i += l
 
-			valSz, err := unix.ExtattrGetLink(n.ns, path, key, nil)
+			// 2. Query size of attribute value
+			valSz, err := unix.ExtattrGetLink(path, n.ns, key, 0, 0)
 			if err != nil || valSz <= 0 {
 				continue
 			}
+
 			val := make([]byte, valSz)
-			valSz, err = unix.ExtattrGetLink(n.ns, path, key, val)
+			valSz, err = unix.ExtattrGetLink(path, n.ns, key, uintptr(unsafe.Pointer(&val[0])), len(val))
 			if err == nil {
 				hdr.PAXRecords["SCHILY.xattr."+n.prefix+key] = string(val[:valSz])
 			}
@@ -80,8 +85,30 @@ func applyXattrs(path string, hdr *tar.Header) error {
 				attrName = strings.TrimPrefix(attrName, "user.")
 			}
 
-			unix.ExtattrSetLink(ns, path, attrName, []byte(v))
+			var ptr uintptr
+			if len(v) > 0 {
+				bytesVal := []byte(v)
+				ptr = uintptr(unsafe.Pointer(&bytesVal[0]))
+			}
+
+			unix.ExtattrSetLink(path, ns, attrName, ptr, len(v))
 		}
 	}
 	return nil
+}
+
+func lookupUser(name string) (int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return -1, err
+	}
+	return strconv.Atoi(u.Uid)
+}
+
+func lookupGroup(name string) (int, error) {
+	g, err := user.LookupGroup(name)
+	if err != nil {
+		return -1, err
+	}
+	return strconv.Atoi(g.Gid)
 }
