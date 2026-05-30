@@ -45,7 +45,7 @@ type Archiver struct {
 	wc            *WriteCloser
 	options       archiverOptions
 	m             sync.Mutex
-	seenHardLinks map[string]string
+	seenHardLinks map[hardlinkKey]string
 }
 
 func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archiver, error) {
@@ -59,7 +59,7 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 			method: Store,
 			chroot: chroot,
 		},
-		seenHardLinks: make(map[string]string),
+		seenHardLinks: make(map[hardlinkKey]string),
 	}
 
 	for _, o := range opts {

@@ -37,11 +37,13 @@ func extractSpecialFile(path string, hdr *tar.Header) error {
 	return nil
 }
 
-func getHardLinkTarget(fi os.FileInfo, seen map[string]string) string {
+type hardlinkKey struct{}
+
+func getHardLinkTarget(fi os.FileInfo, seen map[hardlinkKey]string) string {
 	return ""
 }
 
-func rememberHardLink(fi os.FileInfo, relPath string, seen map[string]string) {}
+func rememberHardLink(fi os.FileInfo, relPath string, seen map[hardlinkKey]string) {}
 
 func sysXattrs(path string, hdr *tar.Header) error {
 	return nil
