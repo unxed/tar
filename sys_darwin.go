@@ -6,6 +6,8 @@ package tar
 import (
 	"archive/tar"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 func mknod(name string, mode uint32, dev uint64) error {
