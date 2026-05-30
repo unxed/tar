@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 
+	"sync"
+
 	"golang.org/x/sync/errgroup"
 )
 
@@ -64,13 +66,21 @@ func WithExtractorSparse(b bool) ExtractorOption {
 	}
 }
 
+var sparseBufPool = sync.Pool{
+	New: func() any {
+		return make([]byte, 32*1024)
+	},
+}
+
 func isAllZeros(p []byte) bool {
-	for _, b := range p {
-		if b != 0 {
-			return false
-		}
+	if len(p) == 0 {
+		return true
 	}
-	return true
+	if p[0] != 0 {
+		return false
+	}
+	// Highly optimized SIMD-comparison via standard Go runtime bytealg
+	return len(p) == 1 || p[0] == p[1] && bytes.Equal(p[:len(p)-1], p[1:])
 }
 
 func copySparseBytes(dst *os.File, data []byte) error {
@@ -97,7 +107,10 @@ func copySparseBytes(dst *os.File, data []byte) error {
 }
 
 func copySparse(dst *os.File, src io.Reader, size int64) error {
-	buf := make([]byte, 32*1024)
+	bufInterface := sparseBufPool.Get()
+	defer sparseBufPool.Put(bufInterface)
+	buf := bufInterface.([]byte)
+
 	var written int64
 	for {
 		n, err := src.Read(buf)

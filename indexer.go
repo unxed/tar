@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"io"
 	"os"
+	"strings"
 )
 
 type trackingReader struct {
@@ -25,17 +26,31 @@ func insertParentFolders(p string, batch *[]FileNode, seen map[string]bool) {
 
 	curr := dir
 	for curr != "/" && curr != "" {
-		pDir, pName := normalizePath(curr)
-		if !seen[curr] {
-			seen[curr] = true
-			*batch = append(*batch, FileNode{
-				Path:        pDir,
-				Name:        pName,
-				Type:        TypeDir,
-				Mode:        0755 | 040000,
-				IsGenerated: true,
-			})
+		if seen[curr] {
+			break // If we've seen this folder, we definitely processed all its parents already
 		}
+		seen[curr] = true
+
+		// Highly optimized string slicing instead of recursive normalizePath calls
+		lastSlash := strings.LastIndexByte(curr, '/')
+		var pDir, pName string
+		if lastSlash == 0 {
+			pDir = "/"
+			pName = curr[1:]
+		} else if lastSlash > 0 {
+			pDir = curr[:lastSlash]
+			pName = curr[lastSlash+1:]
+		} else {
+			break
+		}
+
+		*batch = append(*batch, FileNode{
+			Path:        pDir,
+			Name:        pName,
+			Type:        TypeDir,
+			Mode:        0755 | 040000,
+			IsGenerated: true,
+		})
 		curr = pDir
 	}
 }

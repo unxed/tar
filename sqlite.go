@@ -3,7 +3,6 @@ package tar
 import (
 	"database/sql"
 	"path"
-	"strings"
 	"time"
 	"fmt"
 	"bytes"
@@ -34,14 +33,22 @@ type Index struct {
 }
 
 func normalizePath(p string) (dir, name string) {
-	p = "/" + strings.TrimPrefix(p, "/")
-	p = path.Clean(p)
-	if p == "/" {
+	if p == "" {
 		return "/", ""
 	}
-	dir, name = path.Split(p)
-	dir = strings.TrimSuffix(dir, "/")
-	if dir == "" {
+	var cleanPath string
+	if p[0] == '/' {
+		cleanPath = path.Clean(p)
+	} else {
+		cleanPath = path.Clean("/" + p)
+	}
+	if cleanPath == "/" {
+		return "/", ""
+	}
+	dir, name = path.Split(cleanPath)
+	if len(dir) > 1 {
+		dir = dir[:len(dir)-1] // Fast, zero-allocation slicing instead of strings.TrimSuffix
+	} else {
 		dir = "/"
 	}
 	return dir, name
