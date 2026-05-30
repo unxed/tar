@@ -532,3 +532,36 @@ func TestTolerantMode_Tar(t *testing.T) {
 		t.Error("good1.txt missing")
 	}
 }
+
+func TestExtractor_ConcurrencyIntegrity(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "stress.tar")
+	dstDir := filepath.Join(tmpDir, "dst")
+
+	f, _ := os.Create(archivePath)
+	tw := NewWriter(f)
+	for i := 0; i < 100; i++ {
+		name := fmt.Sprintf("file_%d.txt", i)
+		tw.WriteHeader(&Header{Name: name, Size: int64(len(name)), Mode: 0644})
+		tw.Write([]byte(name))
+	}
+	tw.Close()
+	f.Close()
+
+	ignoreChown := WithExtractorChownErrorHandler(func(name string, err error) error {
+		return nil
+	})
+	e, _ := NewExtractor(archivePath, dstDir, WithExtractorConcurrency(20), ignoreChown)
+	if err := e.Extract(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.Close()
+
+	for i := 0; i < 100; i++ {
+		name := fmt.Sprintf("file_%d.txt", i)
+		data, _ := os.ReadFile(filepath.Join(dstDir, name))
+		if string(data) != name {
+			t.Errorf("Integrity breach at %s: expected %q, got %q", name, name, string(data))
+		}
+	}
+}
