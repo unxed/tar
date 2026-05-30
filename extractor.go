@@ -22,6 +22,8 @@ type extractorOptions struct {
 	maxDecompressionRatio int64
 	keepOldFiles          bool
 	keepNewerFiles        bool
+	noTimes               bool
+	stripComponents       int
 }
 
 func WithExtractorConcurrency(n int) ExtractorOption {
@@ -57,6 +59,34 @@ func WithExtractorKeepNewerFiles(keep bool) ExtractorOption {
 		o.keepNewerFiles = keep
 		return nil
 	}
+}
+// WithExtractorNoTimes prevents restoring original modification times (-m / --touch)
+func WithExtractorNoTimes(noTimes bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.noTimes = noTimes
+		return nil
+	}
+}
+
+// WithExtractorStripComponents strips the specified number of leading components from file names on extraction (--strip-components)
+func WithExtractorStripComponents(count int) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.stripComponents = count
+		return nil
+	}
+}
+
+func stripComponents(name string, count int) (string, bool) {
+	cleaned := filepath.ToSlash(filepath.Clean(name))
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	if cleaned == "." || cleaned == "" {
+		return "", false
+	}
+	parts := strings.Split(cleaned, "/")
+	if len(parts) <= count {
+		return "", false
+	}
+	return strings.Join(parts[count:], "/"), true
 }
 
 // WithExtractorChownErrorHandler allows gracefully ignoring chown errors
@@ -124,7 +154,16 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			return err
 		}
 
-		path, err := filepath.Abs(filepath.Join(e.chroot, hdr.Name))
+		name := hdr.Name
+		if e.options.stripComponents > 0 {
+			stripped, ok := stripComponents(name, e.options.stripComponents)
+			if !ok {
+				continue // Skip file with fewer or equal components
+			}
+			name = stripped
+		}
+
+		path, err := filepath.Abs(filepath.Join(e.chroot, name))
 		if err != nil {
 			return err
 		}
@@ -153,8 +192,8 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		}
 
 		switch hdr.Typeflag {
-		case TypeXGlobalHeader, TypeVol:
-			// Ignore global extended headers and volume labels (GNU extensions) for extraction
+		case TypeXGlobalHeader, TypeVol, TypeGNUDumpDir, TypeGNUMultiVol:
+			// Ignore global extended headers, volume labels, dumpdirs, and multivol headers for extraction
 			continue
 		case TypeDir:
 			os.MkdirAll(path, 0777)
@@ -217,7 +256,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						return err
 					}
 
-					lchtimes(path, hdr.AccessTime, hdr.ModTime)
+					if !e.options.noTimes {
+						lchtimes(path, hdr.AccessTime, hdr.ModTime)
+					}
 					os.Chmod(path, os.FileMode(hdr.Mode))
 
 					err = lchown(path, hdr.Uid, hdr.Gid)
@@ -253,7 +294,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				limiter <- struct{}{}
 				wg.Go(func() error {
 					defer func() { <-limiter }()
-					lchtimes(path, hdr.AccessTime, hdr.ModTime)
+					if !e.options.noTimes {
+						lchtimes(path, hdr.AccessTime, hdr.ModTime)
+					}
 					os.Chmod(path, os.FileMode(hdr.Mode))
 
 					err := lchown(path, hdr.Uid, hdr.Gid)
@@ -287,7 +330,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				return err
 			}
 		}
-		lchtimes(path, hdr.AccessTime, hdr.ModTime)
+		if !e.options.noTimes {
+			lchtimes(path, hdr.AccessTime, hdr.ModTime)
+		}
 		os.Chmod(path, os.FileMode(hdr.Mode))
 		err = lchown(path, hdr.Uid, hdr.Gid)
 		if err != nil && e.options.chownErrorHandler != nil {
@@ -300,7 +345,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 
 	// Apply directory times and permissions
 	for path, hdr := range dirs {
-		lchtimes(path, hdr.AccessTime, hdr.ModTime)
+		if !e.options.noTimes {
+			lchtimes(path, hdr.AccessTime, hdr.ModTime)
+		}
 		os.Chmod(path, os.FileMode(hdr.Mode))
 
 		err := lchown(path, hdr.Uid, hdr.Gid)

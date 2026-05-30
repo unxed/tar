@@ -36,6 +36,8 @@ const (
 	TypeGNULongName   = tar.TypeGNULongName
 	TypeGNULongLink   = tar.TypeGNULongLink
 	TypeVol           = 'V' // GNUTYPE_VOLHDR (Volume header)
+	TypeGNUDumpDir    = 'D' // GNUTYPE_DUMPDIR
+	TypeGNUMultiVol   = 'M' // GNUTYPE_MULTIVOL
 )
 
 const (
