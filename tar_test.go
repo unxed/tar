@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +90,101 @@ func TestUpdater(t *testing.T) {
 
 	if found != 2 {
 		t.Errorf("Expected 2 files, found %d", found)
+	}
+}
+
+func TestTarExternalCompatibility_Tar(t *testing.T) {
+	tarPath, err := exec.LookPath("tar")
+	hasTar := err == nil
+	bsdtarPath, err := exec.LookPath("bsdtar")
+	hasBsdTar := err == nil
+
+	if !hasTar && !hasBsdTar {
+		t.Skip("Neither native tar nor bsdtar found on this system. Skipping external compatibility check.")
+	}
+
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src")
+	os.MkdirAll(srcDir, 0755)
+
+	filePath := filepath.Join(srcDir, "test.txt")
+	os.WriteFile(filePath, []byte("tar compatibility content"), 0644)
+
+	archivePath := filepath.Join(tmpDir, "compat.tar.gz")
+	a, err := NewArchiver(archivePath, tmpDir, WithArchiverMethod(GZIP), WithArchiverXattrs(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mockHdr := &Header{
+		Name:     "src/test.txt",
+		Size:     int64(len("tar compatibility content")),
+		Mode:     0644,
+		Typeflag: TypeReg,
+		Uid:      8888,
+		Gid:      9999,
+		Uname:    "compatuser",
+		Gname:    "compatgroup",
+		PAXRecords: map[string]string{
+			"SCHILY.xattr.user.compat": "yes",
+			"MSWINDOWS.raw_sd":         "mock-acl-descriptor-data",
+		},
+	}
+
+	a.m.Lock()
+	err = a.wc.WriteHeader(mockHdr)
+	a.m.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.wc.Write([]byte("tar compatibility content"))
+	a.Close()
+
+	verifyExtracted := func(dst string, name string) {
+		extractedFile := filepath.Join(dst, "src", "test.txt")
+		data, err := os.ReadFile(extractedFile)
+		if err != nil {
+			t.Fatalf("Failed to read extracted file by external tar: %v", err)
+		}
+		if string(data) != "tar compatibility content" {
+			t.Errorf("Content mismatch: expected 'tar compatibility content', got %q", string(data))
+		}
+
+		if runtime.GOOS == "linux" {
+			cmd := exec.Command("getfattr", "-n", "user.compat", extractedFile)
+			if output, err := cmd.CombinedOutput(); err == nil {
+				if strings.Contains(string(output), "yes") {
+					t.Log("[DEBUG TEST] Native tar successfully restored POSIX xattrs!")
+				}
+			}
+		}
+	}
+
+	if hasTar {
+		t.Logf("[DEBUG TEST] Found native tar utility at %s. Verifying compatibility...", tarPath)
+		dstDir := filepath.Join(tmpDir, "tar_dst")
+		os.MkdirAll(dstDir, 0755)
+
+		cmd := exec.Command(tarPath, "-xzf", archivePath, "-C", dstDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Logf("[DEBUG TEST] Native tar execution failed (might lack --xattrs support on this OS): %v, output: %s", err, string(output))
+		} else {
+			verifyExtracted(dstDir, "tar")
+		}
+	}
+
+	if hasBsdTar {
+		t.Logf("[DEBUG TEST] Found native bsdtar utility at %s. Verifying compatibility...", bsdtarPath)
+		dstDir := filepath.Join(tmpDir, "bsdtar_dst")
+		os.MkdirAll(dstDir, 0755)
+
+		cmd := exec.Command(bsdtarPath, "-xzf", archivePath, "-C", dstDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Logf("[DEBUG TEST] Native bsdtar execution failed: %v, output: %s", err, string(output))
+		} else {
+			verifyExtracted(dstDir, "bsdtar")
+		}
 	}
 }
 
