@@ -33,6 +33,7 @@ type extractorOptions struct {
 	unlinkFirst           bool
 	numericOwner          bool
 	keepBroken            bool
+	tolerant              bool
 }
 
 // WithExtractorSafeWrites extracts files atomically by writing to a temporary file and renaming (--safe-writes).
@@ -61,6 +62,13 @@ func WithExtractorNumericOwner(b bool) ExtractorOption {
 func WithExtractorKeepBroken(b bool) ExtractorOption {
 	return func(o *extractorOptions) error {
 		o.keepBroken = b
+		return nil
+	}
+}
+
+func WithExtractorTolerant(b bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.tolerant = b
 		return nil
 	}
 }
@@ -281,14 +289,15 @@ func (e *Extractor) Extract(ctx context.Context) error {
 	dirs := make(map[string]*Header)
 	var links []*Header
 
-	for {
-		hdr, err := e.rc.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
+	mainErr := func() error {
+		for {
+			hdr, err := e.rc.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
 
 		name := hdr.Name
 		if e.options.stripComponents > 0 {
@@ -426,6 +435,10 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				if err != nil && e.options.chownErrorHandler != nil {
 					err = e.options.chownErrorHandler(path, err)
 				}
+				if err != nil && e.options.tolerant {
+					fmt.Printf("tar: skipping corrupted special file %q: %v\n", hdr.Name, err)
+					return nil
+				}
 				return err
 			})
 
@@ -455,10 +468,12 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				}
 
 				limiter <- struct{}{}
+				h, p, _ := *hdr, path, data // Local copies for worker
 				wg.Go(func() error {
 					defer func() { <-limiter }()
 
-					writePath := path
+					writePath := p
+					hdr := &h
 					if e.options.safeWrites {
 						writePath = path + ".tmp"
 					}
@@ -514,6 +529,10 @@ func (e *Extractor) Extract(ctx context.Context) error {
 							return rerr
 						}
 					}
+					if err != nil && e.options.tolerant {
+						fmt.Printf("tar: skipping corrupted file %q: %v\n", hdr.Name, err)
+						return nil
+					}
 					return err
 				})
 			} else {
@@ -560,8 +579,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 
 				// Apply metadata in background to save time
 				limiter <- struct{}{}
+				h, p := *hdr, writePath // Local copies for worker
 				wg.Go(func() error {
 					defer func() { <-limiter }()
+					hdr := &h
+					writePath := p
 					if e.options.xattrs {
 						applyXattrs(writePath, hdr)
 					}
@@ -583,14 +605,24 @@ func (e *Extractor) Extract(ctx context.Context) error {
 							return rerr
 						}
 					}
+					if err != nil && e.options.tolerant {
+						fmt.Printf("tar: skipping corrupted file %q: %v\n", hdr.Name, err)
+						return nil
+					}
 					return err
 				})
 			}
 		}
-	}
+		}
+		return nil
+	}()
 
-	if err := wg.Wait(); err != nil {
-		return err
+	waitErr := wg.Wait()
+	if mainErr != nil {
+		return mainErr
+	}
+	if waitErr != nil {
+		return waitErr
 	}
 
 	// Restore symlinks and hardlinks in the second phase

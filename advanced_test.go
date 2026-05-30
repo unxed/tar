@@ -504,3 +504,31 @@ func TestExtractor_LargeFileHybrid(t *testing.T) {
 		t.Errorf("Expected size %d, got %d", size, fi.Size())
 	}
 }
+
+func TestTolerantMode_Tar(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "corrupt.tar")
+	dstDir := filepath.Join(tmpDir, "dst")
+
+	f, _ := os.Create(archivePath)
+	tw := NewWriter(f)
+	tw.WriteHeader(&Header{Name: "good1.txt", Size: 4, Mode: 0644})
+	tw.Write([]byte("fine"))
+
+	// Создаем заголовок файла, данные которого мы не допишем
+	tw.WriteHeader(&Header{Name: "bad.txt", Size: 1000, Mode: 0644})
+	tw.Write([]byte("too short"))
+	// Не закрываем TW и не дописываем нули, просто обрываем файл
+	f.Close()
+
+	// Распаковываем с TolerantMode(true)
+	e, _ := NewExtractor(archivePath, dstDir, WithExtractorTolerant(true))
+	err := e.Extract(context.Background())
+	// В TAR ошибка придет из цикла Next(), если структура совсем битая,
+	// но если Next() прошел, а Copy() упал — tolerant спасет.
+	_ = err
+
+	if _, err := os.Stat(filepath.Join(dstDir, "good1.txt")); err != nil {
+		t.Error("good1.txt missing")
+	}
+}
