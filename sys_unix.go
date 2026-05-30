@@ -44,6 +44,17 @@ func rememberHardLink(fi os.FileInfo, relPath string, seen map[hardlinkKey]strin
 func lchown(name string, uid, gid int) error {
 	return os.Lchown(name, uid, gid)
 }
+func getFileSecurity(path string) ([]byte, error) {
+	return nil, nil
+}
+
+func applyNtfsAcl(path string, acl []byte) error {
+	return nil
+}
+
+func getAlternativeDataStreams(path string) ([]string, error) {
+	return nil, nil
+}
 
 func lchtimes(name string, atime, mtime time.Time) error {
 	at := unix.NsecToTimeval(atime.UnixNano())

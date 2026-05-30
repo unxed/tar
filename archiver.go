@@ -2,6 +2,7 @@ package tar
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -88,6 +89,33 @@ func (a *Archiver) Close() error {
 // Archive writes files to the tar sequentially.
 // For TAR, unlike ZIP, we cannot write data streams concurrently to the same file.
 func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) error {
+	if a.options.xattrs {
+		type virtualFile struct {
+			path string
+			info os.FileInfo
+		}
+		var virtualFiles []virtualFile
+
+		for name, fi := range files {
+			if fi != nil && fi.Mode().IsRegular() {
+				streams, _ := getAlternativeDataStreamsFunc(name)
+				for _, stream := range streams {
+					streamPath := name + stream
+					if streamFi, serr := os.Stat(streamPath); serr == nil {
+						virtualFiles = append(virtualFiles, virtualFile{
+							path: streamPath,
+							info: streamFi,
+						})
+					}
+				}
+			}
+		}
+
+		for _, vf := range virtualFiles {
+			files[vf.path] = vf.info
+		}
+	}
+
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
@@ -134,6 +162,14 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		hdr.Name = filepath.ToSlash(rel)
 		if fi.IsDir() {
 			hdr.Name += "/"
+		}
+		if a.options.xattrs {
+			if acl, err := getFileSecurityFunc(path); err == nil && len(acl) > 0 {
+				if hdr.PAXRecords == nil {
+					hdr.PAXRecords = make(map[string]string)
+				}
+				hdr.PAXRecords["MSWINDOWS.raw_sd"] = base64.StdEncoding.EncodeToString(acl)
+			}
 		}
 
 		// Enrich header with Unix-specific metadata (UID/GID as text, devices, atime/ctime)

@@ -30,6 +30,8 @@ This library is built with strict adherence to the following design constraints:
   * Facilitates **O(1) random-access** file reading for uncompressed `.tar` archives via `io.SectionReader`.
   * Automatically synthesizes missing parent folders on the fly.
 * **Unix Properties Preservation:** Transparently preserves and restores Symlinks, Hardlinks, Unix permissions, UID/GID (numeric & string), timestamps, and special files (Devices, FIFOs).
+* **NTFS & Windows Compatibility:** Supports reading, writing, and restoring Windows Security Descriptors (NTFS ACLs) via PAX extended headers, alongside physical pre-allocation to prevent file fragmentation on NTFS.
+* **Safe Extraction and Sanitization:** Implements automatic path verification to block symlink directory traversal attacks (such as Tar Slip), sanitizes Zone.Identifier (Mark of the Web) streams, and safely cleans up partial files on errors unless configured otherwise.
 
 ## Usage
 

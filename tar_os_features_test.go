@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+    "runtime"
+    "bytes"
 )
 
 func TestExtractor_KeepOldFiles(t *testing.T) {
@@ -283,5 +285,235 @@ func TestExtractor_IncrementalDumpDir(t *testing.T) {
 	// Verify "deleted.txt" was removed because it was absent from the GNU dumpdir list
 	if _, err := os.Stat(filepath.Join(dstDir, "myfolder", "deleted.txt")); !os.IsNotExist(err) {
 		t.Errorf("File 'deleted.txt' was not deleted during incremental restore")
+	}
+}
+func TestNtfsAclAndAds_Windows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("skipping Windows-specific test")
+	}
+
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "test.txt")
+	err := os.WriteFile(filePath, []byte("main data"), 0644)
+	if err != nil {
+		t.Fatalf("failed to write main file: %v", err)
+	}
+
+	// Write an alternate data stream
+	adsPath := filePath + ":my_stream"
+	err = os.WriteFile(adsPath, []byte("stream data"), 0644)
+	if err != nil {
+		t.Fatalf("failed to write alternate data stream: %v", err)
+	}
+
+	// Verify getAlternativeDataStreams
+	streams, err := getAlternativeDataStreams(filePath)
+	if err != nil {
+		t.Fatalf("getAlternativeDataStreams failed: %v", err)
+	}
+	found := false
+	for _, s := range streams {
+		if s == ":my_stream" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected to find stream ':my_stream', got %v", streams)
+	}
+
+	// Verify getFileSecurity
+	acl, err := getFileSecurity(filePath)
+	if err != nil {
+		t.Fatalf("getFileSecurity failed: %v", err)
+	}
+	if len(acl) == 0 {
+		t.Error("expected non-empty security descriptor")
+	}
+
+	// Verify applyNtfsAcl
+	err = applyNtfsAcl(filePath, acl)
+	if err != nil {
+		t.Errorf("applyNtfsAcl failed: %v", err)
+	}
+}
+
+func TestNtfsAclAndAds_Mocked(t *testing.T) {
+	// Save original functions
+	origGetFileSecurity := getFileSecurityFunc
+	origApplyNtfsAcl := applyNtfsAclFunc
+	origGetAlternativeDataStreams := getAlternativeDataStreamsFunc
+
+	defer func() {
+		getFileSecurityFunc = origGetFileSecurity
+		applyNtfsAclFunc = origApplyNtfsAcl
+		getAlternativeDataStreamsFunc = origGetAlternativeDataStreams
+	}()
+
+	mockAcl := []byte("mock-security-descriptor-data")
+	mockStreams := []string{":Zone.Identifier", ":custom_stream"}
+
+	// Setup mocks
+	getFileSecurityFunc = func(path string) ([]byte, error) {
+		return mockAcl, nil
+	}
+
+	appliedAcl := []byte{}
+	applyNtfsAclFunc = func(path string, acl []byte) error {
+		appliedAcl = acl
+		return nil
+	}
+
+	getAlternativeDataStreamsFunc = func(path string) ([]string, error) {
+		return mockStreams, nil
+	}
+
+	// Test archiver with mocks
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "test_file.txt")
+	os.WriteFile(filePath, []byte("some content"), 0644)
+
+	os.WriteFile(filePath+":Zone.Identifier", []byte("zone data"), 0644)
+	os.WriteFile(filePath+":custom_stream", []byte("custom data"), 0644)
+
+	tarPath := filepath.Join(tmp, "archive.tar")
+	a, err := NewArchiver(tarPath, tmp, WithArchiverXattrs(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info, _ := os.Stat(filePath)
+	files := map[string]os.FileInfo{filePath: info}
+
+	err = a.Archive(context.Background(), files)
+	if err != nil {
+		t.Fatalf("Archiving with mocks failed: %v", err)
+	}
+	a.Close()
+
+	// Extract and verify
+	dstDir := filepath.Join(tmp, "extracted")
+	e, err := NewExtractor(tarPath, dstDir, WithExtractorXattrs(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = e.Extract(context.Background())
+	if err != nil {
+		t.Fatalf("Extraction with mocks failed: %v", err)
+	}
+	e.Close()
+
+	// Verify applied ACL
+	if !bytes.Equal(appliedAcl, mockAcl) {
+		t.Errorf("expected applied ACL %q, got %q", string(mockAcl), string(appliedAcl))
+	}
+}
+
+func TestExtractor_LinksToDirs(t *testing.T) {
+	tmp := t.TempDir()
+	tarPath := filepath.Join(tmp, "links_to_dirs.tar")
+	dstDir := filepath.Join(tmp, "extract")
+
+	f, _ := os.Create(tarPath)
+	zw := NewWriter(f)
+	zw.WriteHeader(&Header{Name: "sub/file.txt", Size: 9, Mode: 0644})
+	zw.Write([]byte("file-data"))
+	zw.Close()
+	f.Close()
+
+	trap := filepath.Join(tmp, "trap")
+	os.Mkdir(trap, 0755)
+	os.Mkdir(dstDir, 0755)
+	os.Symlink(trap, filepath.Join(dstDir, "sub"))
+
+	ignoreChown := WithExtractorChownErrorHandler(func(name string, err error) error { return nil })
+	e, _ := NewExtractor(tarPath, dstDir, ignoreChown)
+	err := e.Extract(context.Background())
+	if err != nil {
+		t.Fatalf("Extraction failed: %v", err)
+	}
+	e.Close()
+
+	fi, err := os.Lstat(filepath.Join(dstDir, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Error("expected symlink 'sub' to be deleted and replaced with a physical directory")
+	}
+
+	if _, err := os.Stat(filepath.Join(trap, "file.txt")); err == nil {
+		t.Error("Security violation! File extracted through symlink")
+	}
+}
+
+func TestExtractor_SanitizeMOTW(t *testing.T) {
+	tmp := t.TempDir()
+	tarPath := filepath.Join(tmp, "motw.tar")
+	dstDir := filepath.Join(tmp, "extract")
+
+	f, _ := os.Create(tarPath)
+	zw := NewWriter(f)
+	data := []byte("[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=http://evil.com/leak\r\nHostUrl=http://evil.com/file\r\n")
+	zw.WriteHeader(&Header{Name: "test.txt:Zone.Identifier", Size: int64(len(data)), Mode: 0644})
+	zw.Write(data)
+	zw.Close()
+	f.Close()
+
+	e, _ := NewExtractor(tarPath, dstDir)
+	e.Extract(context.Background())
+	e.Close()
+
+	out, err := os.ReadFile(filepath.Join(dstDir, "test.txt:Zone.Identifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := "[ZoneTransfer]\r\nZoneId=3\r\n"
+	if string(out) != expected {
+		t.Errorf("expected sanitized MOTW %q, got %q", expected, string(out))
+	}
+}
+
+func TestExtractor_KeepBroken(t *testing.T) {
+	tmp := t.TempDir()
+	tarPath := filepath.Join(tmp, "broken.tar")
+	dstDir := filepath.Join(tmp, "extract")
+
+	f, _ := os.Create(tarPath)
+	zw := NewWriter(f)
+	// Declare a large file size (17MB) to force the streaming large-file branch
+	size := int64(17 * 1024 * 1024)
+	zw.WriteHeader(&Header{Name: "file.txt", Size: size, Mode: 0644})
+	zw.Write(make([]byte, 1024*1024)) // write only 1MB
+	zw.Flush()
+
+	// Truncate the physical archive file to 512KB to force an unexpected EOF during read
+	f.Truncate(512 * 1024)
+	f.Close()
+
+	ignoreChown := WithExtractorChownErrorHandler(func(name string, err error) error { return nil })
+
+	// 1. Extraction without KeepBroken (default): file should be cleaned up (deleted)
+	e, _ := NewExtractor(tarPath, dstDir, ignoreChown)
+	err := e.Extract(context.Background())
+	e.Close()
+	if err == nil {
+		t.Error("expected extraction to fail due to corruption")
+	}
+	if _, serr := os.Stat(filepath.Join(dstDir, "file.txt")); serr == nil {
+		t.Error("expected corrupted file to be deleted by default")
+	}
+
+	// 2. Extraction with KeepBroken: file should be preserved
+	os.RemoveAll(dstDir)
+	e2, _ := NewExtractor(tarPath, dstDir, WithExtractorKeepBroken(true), ignoreChown)
+	err2 := e2.Extract(context.Background())
+	e2.Close()
+	if err2 == nil {
+		t.Error("expected extraction to fail")
+	}
+	if _, serr := os.Stat(filepath.Join(dstDir, "file.txt")); serr != nil {
+		t.Error("expected corrupted file to be preserved when KeepBroken is enabled")
 	}
 }

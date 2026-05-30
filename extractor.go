@@ -3,13 +3,13 @@ package tar
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -32,6 +32,7 @@ type extractorOptions struct {
 	safeWrites            bool
 	unlinkFirst           bool
 	numericOwner          bool
+	keepBroken            bool
 }
 
 // WithExtractorSafeWrites extracts files atomically by writing to a temporary file and renaming (--safe-writes).
@@ -54,6 +55,12 @@ func WithExtractorUnlinkFirst(b bool) ExtractorOption {
 func WithExtractorNumericOwner(b bool) ExtractorOption {
 	return func(o *extractorOptions) error {
 		o.numericOwner = b
+		return nil
+	}
+}
+func WithExtractorKeepBroken(b bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.keepBroken = b
 		return nil
 	}
 }
@@ -301,6 +308,10 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			return fmt.Errorf("%s cannot be extracted outside of chroot (%s)", path, e.chroot)
 		}
 
+		if err := e.linksToDirs(path); err != nil {
+			return err
+		}
+
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -438,6 +449,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					}
 				}
 
+				if strings.HasSuffix(hdr.Name, ":Zone.Identifier") && len(data) > 0 {
+					data = sanitizeZoneIdentifier(data)
+					hdr.Size = int64(len(data))
+				}
+
 				limiter <- struct{}{}
 				wg.Go(func() error {
 					defer func() { <-limiter }()
@@ -452,6 +468,18 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						return err
 					}
 
+					cleanup := true
+					defer func() {
+						f.Close()
+						if err != nil && cleanup && !e.options.keepBroken {
+							os.Remove(writePath)
+						}
+					}()
+
+					if err := preallocate(f, hdr.Size); err != nil {
+						return err
+					}
+
 					if len(data) > 0 {
 						if e.options.sparse {
 							err = copySparseBytes(f, data)
@@ -461,13 +489,14 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					}
 					f.Close()
 					if err != nil {
-						if e.options.safeWrites { os.Remove(writePath) }
 						return err
 					}
+					cleanup = false
 
 					if e.options.xattrs {
 						applyXattrs(writePath, hdr)
 					}
+					e.restoreNtfsAcl(writePath, hdr)
 					if !e.options.noTimes {
 						lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
 					}
@@ -499,6 +528,14 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					return err
 				}
 
+				cleanup := true
+				defer func() {
+					f.Close()
+					if err != nil && cleanup && !e.options.keepBroken {
+						os.Remove(writePath)
+					}
+				}()
+
 				var r io.Reader = e.rc
 				if e.options.maxDecompressionRatio > 0 && hdr.Size > 0 {
 					// Logic: If the ratio of header.Size to the actual data in the stream
@@ -511,13 +548,15 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				if e.options.sparse {
 					err = copySparse(f, r, hdr.Size)
 				} else {
+					if err := preallocate(f, hdr.Size); err != nil {
+						return err
+					}
 					_, err = io.Copy(f, r)
 				}
-				f.Close()
 				if err != nil {
-					if e.options.safeWrites { os.Remove(writePath) }
 					return err
 				}
+				cleanup = false
 
 				// Apply metadata in background to save time
 				limiter <- struct{}{}
@@ -526,6 +565,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					if e.options.xattrs {
 						applyXattrs(writePath, hdr)
 					}
+					e.restoreNtfsAcl(writePath, hdr)
 					if !e.options.noTimes {
 						lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
 					}
@@ -573,6 +613,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		if e.options.xattrs {
 			applyXattrs(path, hdr)
 		}
+		e.restoreNtfsAcl(path, hdr)
 		if !e.options.noTimes {
 			lchtimes(path, hdr.AccessTime, hdr.ModTime)
 		}
@@ -592,6 +633,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		if e.options.xattrs {
 			applyXattrs(path, hdr)
 		}
+		e.restoreNtfsAcl(path, hdr)
 		if !e.options.noTimes {
 			lchtimes(path, hdr.AccessTime, hdr.ModTime)
 		}
@@ -607,6 +649,48 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+func (e *Extractor) restoreNtfsAcl(path string, hdr *Header) {
+	if len(hdr.PAXRecords) > 0 {
+		if rawSD, ok := hdr.PAXRecords["MSWINDOWS.raw_sd"]; ok {
+			if acl, err := base64.StdEncoding.DecodeString(rawSD); err == nil {
+				applyNtfsAclFunc(path, acl)
+			}
+		}
+	}
+}
+
+func (e *Extractor) linksToDirs(targetPath string) error {
+	if !strings.HasPrefix(targetPath, e.chroot) {
+		return nil
+	}
+	rel, err := filepath.Rel(e.chroot, targetPath)
+	if err != nil {
+		return err
+	}
+	if rel == "." || rel == "" {
+		return nil
+	}
+
+	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
+	current := e.chroot
+	for i := 0; i < len(parts)-1; i++ {
+		current = filepath.Join(current, parts[i])
+		fi, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				break
+			}
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(current); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
