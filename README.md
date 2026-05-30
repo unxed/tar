@@ -116,6 +116,14 @@ if err != nil {
 updater.Close()
 ```
 
+## Supported Format Extensions
+
+This library extends standard Tape Archive (TAR) processing by integrating native Unix and Windows metadata into standard PAX extended headers:
+
+*   **POSIX Extended Attributes (PAX xattrs)**: Stores and restores complete extended attributes (including SELinux contexts and POSIX ACLs) using standard PAX records with `SCHILY.xattr.*` and `LIBARCHIVE.xattr.*` prefixes.
+*   **Windows Security Descriptors (PAX `MSWINDOWS.raw_sd`)**: Encodes raw Windows Security Descriptors (NTFS ACLs) as Base64 strings under the standard PAX record `MSWINDOWS.raw_sd`. This allows cross-platform preservation of Windows security settings.
+*   **Solid Compression Indexes**: Manages block-boundary checkpoint tables (`zstdblocks`, `bzip2blocks`, `gzipindexes`) in SQLite databases to facilitate O(1) random-access seeking.
+
 ## Pluggable Compression Architecture
 
 This library features a modular, pluggable compression registry. If you want to enable true $O(1)$ random-access seeking for custom decompressors (e.g., custom GZIP or BZIP2 decoders), you can register them by implementing the following pure-Go interfaces:
