@@ -222,9 +222,23 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		return nil, err
 	}
 
+	targetOffset := node.Offset
+	if node.IsSparse {
+		targetOffset = node.OffsetHeader
+	}
+
 	// For uncompressed TARs, random access is instantaneous O(1) via SectionReader.
 	if t.method == Store {
-		sr := io.NewSectionReader(f, node.Offset, node.Size)
+		if node.IsSparse {
+			f.Seek(targetOffset, io.SeekStart)
+			tr := NewReader(f)
+			if _, err := tr.Next(); err != nil {
+				f.Close()
+				return nil, err
+			}
+			return &tarFile{node: node, r: tr, c: f}, nil
+		}
+		sr := io.NewSectionReader(f, targetOffset, node.Size)
 		return &tarFile{node: node, r: sr, c: f}, nil
 	}
 
@@ -242,7 +256,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 	if t.method == XZ && len(t.xzBlocks) > 0 {
 		var best *BlockOffset
 		for i := range t.xzBlocks {
-			if t.xzBlocks[i].DataOffset <= node.Offset {
+			if t.xzBlocks[i].DataOffset <= targetOffset {
 				if best == nil || t.xzBlocks[i].DataOffset > best.DataOffset {
 					best = &t.xzBlocks[i]
 				}
@@ -258,7 +272,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 				xr, err := xz.NewReader(mr)
 				if err == nil {
 					dcomp = io.NopCloser(xr)
-					remaining := node.Offset - best.DataOffset
+					remaining := targetOffset - best.DataOffset
 					if remaining > 0 {
 						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 							dcomp.Close()
@@ -267,6 +281,15 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						}
 					}
 
+					if node.IsSparse {
+						tr := NewReader(dcomp)
+						if _, err := tr.Next(); err != nil {
+							dcomp.Close()
+							f.Close()
+							return nil, err
+						}
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, f}}, nil
+					}
 					lr := io.LimitReader(dcomp, node.Size)
 					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
 				}
@@ -284,11 +307,11 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 
 	if table != "" {
 		if importer, ok := di.(BlockOffsetImporter); ok {
-			bo, err := t.Index.GetClosestBlockOffset(table, node.Offset)
+			bo, err := t.Index.GetClosestBlockOffset(table, targetOffset)
 			if err == nil && bo != nil {
 				dcomp, err = importer.ResumeFromBlockOffset(f, bo)
 				if err == nil {
-					remaining := node.Offset - bo.DataOffset
+					remaining := targetOffset - bo.DataOffset
 					if remaining > 0 {
 						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 							dcomp.Close()
@@ -297,6 +320,15 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						}
 					}
 
+					if node.IsSparse {
+						tr := NewReader(dcomp)
+						if _, err := tr.Next(); err != nil {
+							dcomp.Close()
+							f.Close()
+							return nil, err
+						}
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, f}}, nil
+					}
 					lr := io.LimitReader(dcomp, node.Size)
 					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
 				}
@@ -309,13 +341,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		if importer, ok := di.(GzipIndexImporter); ok {
 			indexData, err := t.Index.GetGzipIndex()
 			if err == nil && len(indexData) > 0 {
-				dcomp, uncompOffset, err := importer.ResumeFromGzipIndex(f, indexData, node.Offset)
+				dcomp, uncompOffset, err := importer.ResumeFromGzipIndex(f, indexData, targetOffset)
 				if err == nil {
 					// GZIP index seekable decoder can Seek() directly inside dcomp
 					if seeker, ok := dcomp.(io.ReadSeeker); ok {
-						seeker.Seek(node.Offset, io.SeekStart)
+						seeker.Seek(targetOffset, io.SeekStart)
 					} else {
-						remaining := node.Offset - uncompOffset
+						remaining := targetOffset - uncompOffset
 						if remaining > 0 {
 							if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 								dcomp.Close()
@@ -325,6 +357,15 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						}
 					}
 
+					if node.IsSparse {
+						tr := NewReader(dcomp)
+						if _, err := tr.Next(); err != nil {
+							dcomp.Close()
+							f.Close()
+							return nil, err
+						}
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, f}}, nil
+					}
 					lr := io.LimitReader(dcomp, node.Size)
 					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
 				}
@@ -340,13 +381,22 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		return nil, err
 	}
 
-	_, err = io.CopyN(io.Discard, dcomp, node.Offset)
+	_, err = io.CopyN(io.Discard, dcomp, targetOffset)
 	if err != nil && err != io.EOF {
 		dcomp.Close()
 		f.Close()
 		return nil, err
 	}
 
+	if node.IsSparse {
+		tr := NewReader(dcomp)
+		if _, err := tr.Next(); err != nil {
+			dcomp.Close()
+			f.Close()
+			return nil, err
+		}
+		return &tarFile{node: node, r: tr, c: multiCloser{dcomp, f}}, nil
+	}
 	lr := io.LimitReader(dcomp, node.Size)
 	return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
 }

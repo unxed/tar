@@ -49,3 +49,19 @@ func lchtimes(name string, atime, mtime time.Time) error {
 	}
 	return nil
 }
+func resolveIds(hdr *Header, numericOwner bool) (int, int) {
+	uid, gid := hdr.Uid, hdr.Gid
+	if !numericOwner {
+		if hdr.Uname != "" {
+			if u, err := lookupUser(hdr.Uname); err == nil {
+				uid = u
+			}
+		}
+		if hdr.Gname != "" {
+			if g, err := lookupGroup(hdr.Gname); err == nil {
+				gid = g
+			}
+		}
+	}
+	return uid, gid
+}

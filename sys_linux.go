@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -63,4 +65,74 @@ func extractSpecialFile(path string, hdr *tar.Header) error {
 	}
 	dev := unix.Mkdev(uint32(hdr.Devmajor), uint32(hdr.Devminor))
 	return mknod(path, mode, dev)
+}
+func sysXattrs(path string, hdr *tar.Header) error {
+	sz, err := unix.Llistxattr(path, nil)
+	if err != nil || sz <= 0 {
+		return nil
+	}
+	buf := make([]byte, sz)
+	sz, err = unix.Llistxattr(path, buf)
+	if err != nil {
+		return nil
+	}
+
+	var keys []string
+	for i, j := 0, 0; i < sz; i++ {
+		if buf[i] == 0 {
+			keys = append(keys, string(buf[j:i]))
+			j = i + 1
+		}
+	}
+
+	if len(keys) > 0 && hdr.PAXRecords == nil {
+		hdr.PAXRecords = make(map[string]string)
+	}
+
+	for _, key := range keys {
+		valSz, err := unix.Lgetxattr(path, key, nil)
+		if err != nil || valSz < 0 {
+			continue
+		}
+		val := make([]byte, valSz)
+		_, err = unix.Lgetxattr(path, key, val)
+		if err == nil {
+			// SCHILY.xattr is the standard namespace used by GNU tar and bsdtar for POSIX ACLs, SELinux, and user xattrs
+			hdr.PAXRecords["SCHILY.xattr."+key] = string(val)
+		}
+	}
+	return nil
+}
+
+func applyXattrs(path string, hdr *tar.Header) error {
+	if len(hdr.PAXRecords) == 0 {
+		return nil
+	}
+	for k, v := range hdr.PAXRecords {
+		if strings.HasPrefix(k, "SCHILY.xattr.") {
+			attrName := strings.TrimPrefix(k, "SCHILY.xattr.")
+			// We use Lsetxattr to properly support symlinks
+			unix.Lsetxattr(path, attrName, []byte(v), 0)
+		} else if strings.HasPrefix(k, "LIBARCHIVE.xattr.") {
+			attrName := strings.TrimPrefix(k, "LIBARCHIVE.xattr.")
+			unix.Lsetxattr(path, attrName, []byte(v), 0)
+		}
+	}
+	return nil
+}
+
+func lookupUser(name string) (int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return -1, err
+	}
+	return strconv.Atoi(u.Uid)
+}
+
+func lookupGroup(name string) (int, error) {
+	g, err := user.LookupGroup(name)
+	if err != nil {
+		return -1, err
+	}
+	return strconv.Atoi(g.Gid)
 }

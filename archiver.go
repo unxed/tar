@@ -17,6 +17,15 @@ type archiverOptions struct {
 	method      uint16
 	chroot      string
 	indexPath   string
+	xattrs      bool
+}
+
+// WithArchiverXattrs enables archiving of extended attributes (xattrs, POSIX ACLs, SELinux).
+func WithArchiverXattrs(b bool) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.xattrs = b
+		return nil
+	}
 }
 
 func WithArchiverMethod(method uint16) ArchiverOption {
@@ -131,6 +140,9 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		sysHeader(fi, hdr)
 
 		if link == "" {
+		if a.options.xattrs {
+			sysXattrs(path, hdr)
+		}
 			rememberHardLink(fi, hdr.Name, a.seenHardLinks)
 		} else if fi.Mode()&os.ModeSymlink == 0 {
 			// Bypass Go standard library limitation:

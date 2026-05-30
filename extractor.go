@@ -24,6 +24,121 @@ type extractorOptions struct {
 	keepNewerFiles        bool
 	noTimes               bool
 	stripComponents       int
+	xattrs                bool
+	incremental           bool
+	sparse                bool
+	safeWrites            bool
+	unlinkFirst           bool
+	numericOwner          bool
+}
+
+// WithExtractorSafeWrites extracts files atomically by writing to a temporary file and renaming (--safe-writes).
+func WithExtractorSafeWrites(b bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.safeWrites = b
+		return nil
+	}
+}
+
+// WithExtractorUnlinkFirst removes existing files prior to extracting over them (-U, --unlink-first).
+func WithExtractorUnlinkFirst(b bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.unlinkFirst = b
+		return nil
+	}
+}
+
+// WithExtractorNumericOwner always uses numeric user/group IDs from the archive rather than resolving Uname/Gname (--numeric-owner).
+func WithExtractorNumericOwner(b bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.numericOwner = b
+		return nil
+	}
+}
+
+// WithExtractorSparse enables extracting files as sparse files by seeking over zero-blocks (-S, --sparse).
+func WithExtractorSparse(b bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.sparse = b
+		return nil
+	}
+}
+
+func isAllZeros(p []byte) bool {
+	for _, b := range p {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func copySparseBytes(dst *os.File, data []byte) error {
+	var offset int
+	blockSize := 32 * 1024
+	for offset < len(data) {
+		end := offset + blockSize
+		if end > len(data) {
+			end = len(data)
+		}
+		block := data[offset:end]
+		if isAllZeros(block) {
+			if _, err := dst.Seek(int64(len(block)), io.SeekCurrent); err != nil {
+				return err
+			}
+		} else {
+			if _, err := dst.Write(block); err != nil {
+				return err
+			}
+		}
+		offset = end
+	}
+	return dst.Truncate(int64(len(data)))
+}
+
+func copySparse(dst *os.File, src io.Reader, size int64) error {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if isAllZeros(buf[:n]) {
+				_, seekErr := dst.Seek(int64(n), io.SeekCurrent)
+				if seekErr != nil {
+					return seekErr
+				}
+			} else {
+				_, wErr := dst.Write(buf[:n])
+				if wErr != nil {
+					return wErr
+				}
+			}
+			written += int64(n)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return dst.Truncate(size)
+}
+
+// WithExtractorIncremental enables processing of GNU Dumpdir headers to remove deleted files during incremental restores.
+func WithExtractorIncremental(b bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.incremental = b
+		return nil
+	}
+}
+
+// WithExtractorXattrs enables restoration of extended attributes (xattrs, POSIX ACLs, SELinux).
+func WithExtractorXattrs(b bool) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.xattrs = b
+		return nil
+	}
 }
 
 func WithExtractorConcurrency(n int) ExtractorOption {
@@ -138,8 +253,9 @@ func (e *Extractor) Close() error {
 
 // Extract reads TAR sequentially but delegates disk I/O and chmod/chown to a worker pool.
 func (e *Extractor) Extract(ctx context.Context) error {
+	parentCtx := ctx
 	limiter := make(chan struct{}, e.options.concurrency)
-	wg, ctx := errgroup.WithContext(ctx)
+	wg, ctx := errgroup.WithContext(parentCtx)
 
 	// Directories and their attributes to apply after all files are extracted.
 	dirs := make(map[string]*Header)
@@ -177,6 +293,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		}
 		// Overwrite control policies (GNU/BSD tar compatibility)
 		if hdr.Typeflag != TypeDir && hdr.Typeflag != TypeXGlobalHeader && hdr.Typeflag != TypeVol {
+			if e.options.unlinkFirst {
+				os.Remove(path) // Unconditionally remove before extraction
+			}
 			if e.options.keepOldFiles {
 				if _, err := os.Stat(path); err == nil {
 					continue // Skip extracting, file already exists
@@ -192,9 +311,71 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		}
 
 		switch hdr.Typeflag {
-		case TypeXGlobalHeader, TypeVol, TypeGNUDumpDir, TypeGNUMultiVol:
-			// Ignore global extended headers, volume labels, dumpdirs, and multivol headers for extraction
+		case TypeXGlobalHeader, TypeVol:
+			// Ignore global extended headers and volume labels
 			continue
+
+		case TypeGNUDumpDir:
+			os.MkdirAll(path, 0777)
+			dirs[path] = hdr
+
+			if e.options.incremental && hdr.Size > 0 {
+				data, err := io.ReadAll(e.rc)
+				if err != nil {
+					return err
+				}
+				// GNU dumpdir list is [tag byte][filename]\0, terminated by an extra \0
+				validNames := make(map[string]bool)
+				for i := 0; i < len(data); {
+					if data[i] == 0 {
+						break
+					}
+					start := i + 1 // skip the tag byte (Y/N/D)
+					end := start
+					for end < len(data) && data[end] != 0 {
+						end++
+					}
+					if end > start {
+						validNames[string(data[start:end])] = true
+					}
+					i = end + 1
+				}
+
+				entries, err := os.ReadDir(path)
+				if err == nil {
+					for _, entry := range entries {
+						if !validNames[entry.Name()] {
+							os.RemoveAll(filepath.Join(path, entry.Name()))
+						}
+					}
+				}
+			} else if hdr.Size > 0 {
+				io.Copy(io.Discard, e.rc) // Discard if not in incremental mode
+			}
+			continue
+
+		case TypeGNUMultiVol:
+			// Wait for all previous asynchronous writes to complete to avoid races
+			if err := wg.Wait(); err != nil {
+				return err
+			}
+			// Reset wg with parentCtx
+			wg, ctx = errgroup.WithContext(parentCtx)
+
+			os.MkdirAll(filepath.Dir(path), 0777)
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, os.FileMode(hdr.Mode))
+			if err != nil {
+				return err
+			}
+			if hdr.Size > 0 {
+				_, err = io.Copy(f, e.rc)
+			}
+			f.Close()
+			if err != nil {
+				return err
+			}
+			continue
+
 		case TypeDir:
 			os.MkdirAll(path, 0777)
 			dirs[path] = hdr
@@ -212,7 +393,12 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					return err
 				}
 
-				err = lchown(path, hdr.Uid, hdr.Gid)
+				if e.options.xattrs {
+					applyXattrs(path, hdr)
+				}
+
+				uid, gid := resolveIds(hdr, e.options.numericOwner)
+				err = lchown(path, uid, gid)
 				if err != nil && e.options.chownErrorHandler != nil {
 					err = e.options.chownErrorHandler(path, err)
 				}
@@ -243,38 +429,63 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				wg.Go(func() error {
 					defer func() { <-limiter }()
 
-					f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
+					writePath := path
+					if e.options.safeWrites {
+						writePath = path + ".tmp"
+					}
+
+					f, err := os.OpenFile(writePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
 					if err != nil {
 						return err
 					}
 
 					if len(data) > 0 {
-						_, err = io.Copy(f, bytes.NewReader(data))
+						if e.options.sparse {
+							err = copySparseBytes(f, data)
+						} else {
+							_, err = io.Copy(f, bytes.NewReader(data))
+						}
 					}
 					f.Close()
 					if err != nil {
+						if e.options.safeWrites { os.Remove(writePath) }
 						return err
 					}
 
-					if !e.options.noTimes {
-						lchtimes(path, hdr.AccessTime, hdr.ModTime)
+					if e.options.xattrs {
+						applyXattrs(writePath, hdr)
 					}
-					os.Chmod(path, os.FileMode(hdr.Mode))
+					if !e.options.noTimes {
+						lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
+					}
+					os.Chmod(writePath, os.FileMode(hdr.Mode))
 
-					err = lchown(path, hdr.Uid, hdr.Gid)
+					uid, gid := resolveIds(hdr, e.options.numericOwner)
+					err = lchown(writePath, uid, gid)
 					if err != nil && e.options.chownErrorHandler != nil {
-						err = e.options.chownErrorHandler(path, err)
+						err = e.options.chownErrorHandler(writePath, err)
+					}
+
+					if e.options.safeWrites {
+						if rerr := os.Rename(writePath, path); rerr != nil {
+							os.Remove(writePath)
+							return rerr
+						}
 					}
 					return err
 				})
 			} else {
 				// Large files: stream sequentially in the main loop to prevent OOM
-				f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
+				writePath := path
+				if e.options.safeWrites {
+					writePath = path + ".tmp"
+				}
+
+				f, err := os.OpenFile(writePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
 				if err != nil {
 					return err
 				}
 
-				// Wrap reader to monitor decompression ratio
 				var r io.Reader = e.rc
 				if e.options.maxDecompressionRatio > 0 && hdr.Size > 0 {
 					// Logic: If the ratio of header.Size to the actual data in the stream
@@ -284,9 +495,14 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					// but we can enforce the limit from the header.
 				}
 
-				_, err = io.Copy(f, r)
+				if e.options.sparse {
+					err = copySparse(f, r, hdr.Size)
+				} else {
+					_, err = io.Copy(f, r)
+				}
 				f.Close()
 				if err != nil {
+					if e.options.safeWrites { os.Remove(writePath) }
 					return err
 				}
 
@@ -294,14 +510,25 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				limiter <- struct{}{}
 				wg.Go(func() error {
 					defer func() { <-limiter }()
-					if !e.options.noTimes {
-						lchtimes(path, hdr.AccessTime, hdr.ModTime)
+					if e.options.xattrs {
+						applyXattrs(writePath, hdr)
 					}
-					os.Chmod(path, os.FileMode(hdr.Mode))
+					if !e.options.noTimes {
+						lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
+					}
+					os.Chmod(writePath, os.FileMode(hdr.Mode))
 
-					err := lchown(path, hdr.Uid, hdr.Gid)
+					uid, gid := resolveIds(hdr, e.options.numericOwner)
+					err := lchown(writePath, uid, gid)
 					if err != nil && e.options.chownErrorHandler != nil {
-						err = e.options.chownErrorHandler(path, err)
+						err = e.options.chownErrorHandler(writePath, err)
+					}
+
+					if e.options.safeWrites {
+						if rerr := os.Rename(writePath, path); rerr != nil {
+							os.Remove(writePath)
+							return rerr
+						}
 					}
 					return err
 				})
@@ -330,11 +557,15 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				return err
 			}
 		}
+		if e.options.xattrs {
+			applyXattrs(path, hdr)
+		}
 		if !e.options.noTimes {
 			lchtimes(path, hdr.AccessTime, hdr.ModTime)
 		}
 		os.Chmod(path, os.FileMode(hdr.Mode))
-		err = lchown(path, hdr.Uid, hdr.Gid)
+		uid, gid := resolveIds(hdr, e.options.numericOwner)
+		err = lchown(path, uid, gid)
 		if err != nil && e.options.chownErrorHandler != nil {
 			err = e.options.chownErrorHandler(path, err)
 		}
@@ -345,12 +576,16 @@ func (e *Extractor) Extract(ctx context.Context) error {
 
 	// Apply directory times and permissions
 	for path, hdr := range dirs {
+		if e.options.xattrs {
+			applyXattrs(path, hdr)
+		}
 		if !e.options.noTimes {
 			lchtimes(path, hdr.AccessTime, hdr.ModTime)
 		}
 		os.Chmod(path, os.FileMode(hdr.Mode))
 
-		err := lchown(path, hdr.Uid, hdr.Gid)
+		uid, gid := resolveIds(hdr, e.options.numericOwner)
+		err := lchown(path, uid, gid)
 		if err != nil && e.options.chownErrorHandler != nil {
 			err = e.options.chownErrorHandler(path, err)
 		}

@@ -42,3 +42,15 @@ func getHardLinkTarget(fi os.FileInfo, seen map[string]string) string {
 }
 
 func rememberHardLink(fi os.FileInfo, relPath string, seen map[string]string) {}
+
+func sysXattrs(path string, hdr *tar.Header) error {
+	return nil
+}
+
+func applyXattrs(path string, hdr *tar.Header) error {
+	return nil
+}
+
+func resolveIds(hdr *Header, numericOwner bool) (int, int) {
+	return hdr.Uid, hdr.Gid
+}
