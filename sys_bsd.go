@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/user"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -62,18 +61,3 @@ func extractSpecialFile(path string, hdr *tar.Header) error {
 	return mknod(path, mode, dev)
 }
 
-func lookupUser(name string) (int, error) {
-	u, err := user.Lookup(name)
-	if err != nil {
-		return -1, err
-	}
-	return strconv.Atoi(u.Uid)
-}
-
-func lookupGroup(name string) (int, error) {
-	g, err := user.LookupGroup(name)
-	if err != nil {
-		return -1, err
-	}
-	return strconv.Atoi(g.Gid)
-}

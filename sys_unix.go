@@ -6,6 +6,8 @@ package tar
 import (
 	"fmt"
 	"os"
+	"os/user"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -64,4 +66,19 @@ func resolveIds(hdr *Header, numericOwner bool) (int, int) {
 		}
 	}
 	return uid, gid
+}
+func lookupUser(name string) (int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return -1, err
+	}
+	return strconv.Atoi(u.Uid)
+}
+
+func lookupGroup(name string) (int, error) {
+	g, err := user.LookupGroup(name)
+	if err != nil {
+		return -1, err
+	}
+	return strconv.Atoi(g.Gid)
 }

@@ -3,8 +3,6 @@
 
 package tar
 
-import "golang.org/x/sys/unix"
-
 import (
 	"archive/tar"
 	"strings"
