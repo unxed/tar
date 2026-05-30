@@ -24,7 +24,7 @@ This library is built with strict adherence to the following design constraints:
 * **Broad Compression Support:** Built-in automatic format detection (magic bytes) for `GZIP`, `BZIP2`, `XZ`, and `ZSTD`.
 * **Parallel Extraction:** Reads TAR sequentially but delegates filesystem writes, file creations, and metadata restoration (`chmod`/`chown`) to a parallel worker pool.
 * **In-place Updates (Updater):** Truncates existing TAR EOF zero blocks to allow appending new files without full archive rewrite.
-* **Ratarmount-compatible Indexing & Random Access (`fs.FS`):**
+* **ratarmount-compatible Indexing & Random Access (`fs.FS`):**
   * Indexes `.tar` or compressed `.tar.*` archives on the fly into an SQLite database with a schema identical to `ratarmount`.
   * Exposes the archive as a standard Go `fs.FS` interface.
   * Facilitates **O(1) random-access** file reading for uncompressed `.tar` archives via `io.SectionReader`.
@@ -32,6 +32,8 @@ This library is built with strict adherence to the following design constraints:
 * **Unix Properties Preservation:** Transparently preserves and restores Symlinks, Hardlinks, Unix permissions, UID/GID (numeric & string), timestamps, and special files (Devices, FIFOs).
 * **NTFS & Windows Compatibility:** Supports reading, writing, and restoring Windows Security Descriptors (NTFS ACLs) via PAX extended headers, alongside physical pre-allocation to prevent file fragmentation on NTFS.
 * **Safe Extraction and Sanitization:** Implements automatic path verification to block symlink directory traversal attacks (such as Tar Slip), sanitizes Zone.Identifier (Mark of the Web) streams, and safely cleans up partial files on errors unless configured otherwise.
+* **POSIX Extended Attributes (PAX xattrs)**: Stores and restores complete extended attributes (including SELinux contexts and POSIX ACLs) using standard PAX records with `SCHILY.xattr.*` and `LIBARCHIVE.xattr.*` prefixes.
+* **Windows Security Descriptors (PAX `MSWINDOWS.raw_sd`)**: Encodes raw Windows Security Descriptors (NTFS ACLs) as Base64 strings under the standard PAX record `MSWINDOWS.raw_sd`. This allows cross-platform preservation of Windows security settings.
 
 ## Usage
 
@@ -116,14 +118,6 @@ if err != nil {
 updater.Close()
 ```
 
-## Supported Format Extensions
-
-This library extends standard Tape Archive (TAR) processing by integrating native Unix and Windows metadata into standard PAX extended headers:
-
-*   **POSIX Extended Attributes (PAX xattrs)**: Stores and restores complete extended attributes (including SELinux contexts and POSIX ACLs) using standard PAX records with `SCHILY.xattr.*` and `LIBARCHIVE.xattr.*` prefixes.
-*   **Windows Security Descriptors (PAX `MSWINDOWS.raw_sd`)**: Encodes raw Windows Security Descriptors (NTFS ACLs) as Base64 strings under the standard PAX record `MSWINDOWS.raw_sd`. This allows cross-platform preservation of Windows security settings.
-*   **Solid Compression Indexes**: Manages block-boundary checkpoint tables (`zstdblocks`, `bzip2blocks`, `gzipindexes`) in SQLite databases to facilitate O(1) random-access seeking.
-
 ## Pluggable Compression Architecture
 
 This library features a modular, pluggable compression registry. If you want to enable true $O(1)$ random-access seeking for custom decompressors (e.g., custom GZIP or BZIP2 decoders), you can register them by implementing the following pure-Go interfaces:
@@ -144,10 +138,6 @@ type GzipIndexImporter interface {
 
 Once registered via `RegisterDecompressor()`, `TarFS` will automatically detect them and use their $O(1)$ fast paths during file reads.
 
-### Indexing Limitations & Upstream Dependency
-Please note that while this library natively reads and performs $O(1)$ random-access seeking on compressed index tables (`gzipindexes`, `zstdblocks`, `bzip2blocks`, `xzblocks`), generating GZIP index checkpoints (`GZIDX`) on-the-fly during sequential reading is **not yet supported**. To implement this without resorting to CGO, we require API additions in the upstream decompressor to expose internal state (such as the sliding window dictionary and exact bit offsets). This feature request is tracked here: [klauspost/compress#1151](https://github.com/klauspost/compress/issues/1151).
-
-In the meantime, to achieve true $O(1)$ random access for compressed archives, you must supply an SQLite index database generated beforehand using the Python-based `ratarmount` utility.
 
 ## License
 
