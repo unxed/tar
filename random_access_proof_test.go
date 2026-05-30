@@ -11,7 +11,7 @@ import (
 	"github.com/klauspost/compress/gzip"
 )
 
-// trackingReaderAt оборачивает io.ReaderAt и протоколирует все вызовы ReadAt.
+// trackingReaderAt wraps io.ReaderAt and logs all ReadAt calls.
 type trackingReaderAt struct {
 	r     io.ReaderAt
 	reads []readRecord

@@ -243,7 +243,7 @@ func TestExtractor_DirectoryPermissionOrdering(t *testing.T) {
 	}
 	tw := NewWriter(f)
 
-	// Директория с запретом на запись (0500)
+	// Directory with write restricted (0500)
 	dirHdr := &Header{
 		Name:     "restricted_dir/",
 		Typeflag: TypeDir,
@@ -253,7 +253,7 @@ func TestExtractor_DirectoryPermissionOrdering(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Файл внутри этой директории
+	// File inside this directory
 	fileHdr := &Header{
 		Name:     "restricted_dir/file.txt",
 		Typeflag: TypeReg,
@@ -377,7 +377,7 @@ func TestTarFS_ReadDirIncremental(t *testing.T) {
 		t.Fatal("Directory file does not implement fs.ReadDirFile")
 	}
 
-	// Считываем первые 2 элемента
+	// Read the first 2 entries
 	entries, err := rdf.ReadDir(2)
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +386,7 @@ func TestTarFS_ReadDirIncremental(t *testing.T) {
 		t.Errorf("Expected 2 entries, got %d", len(entries))
 	}
 
-	// Запрашиваем 3 элемента (но осталось всего 2)
+	// Request 3 entries (but only 2 remain)
 	entries2, err := rdf.ReadDir(3)
 	if err != nil {
 		t.Fatal(err)
@@ -395,7 +395,7 @@ func TestTarFS_ReadDirIncremental(t *testing.T) {
 		t.Errorf("Expected remaining 2 entries, got %d", len(entries2))
 	}
 
-	// Дальнейший запрос должен возвращать io.EOF
+	// Subsequent request should return io.EOF
 	_, err = rdf.ReadDir(1)
 	if err != io.EOF {
 		t.Errorf("Expected io.EOF, got %v", err)
@@ -515,17 +515,17 @@ func TestTolerantMode_Tar(t *testing.T) {
 	tw.WriteHeader(&Header{Name: "good1.txt", Size: 4, Mode: 0644})
 	tw.Write([]byte("fine"))
 
-	// Создаем заголовок файла, данные которого мы не допишем
+	// Create file header for which data will not be fully written
 	tw.WriteHeader(&Header{Name: "bad.txt", Size: 1000, Mode: 0644})
 	tw.Write([]byte("too short"))
-	// Не закрываем TW и не дописываем нули, просто обрываем файл
+	// Do not close TW or write trailing zeros, just terminate the file
 	f.Close()
 
-	// Распаковываем с TolerantMode(true)
+	// Extract with TolerantMode(true)
 	e, _ := NewExtractor(archivePath, dstDir, WithExtractorTolerant(true))
 	err := e.Extract(context.Background())
-	// В TAR ошибка придет из цикла Next(), если структура совсем битая,
-	// но если Next() прошел, а Copy() упал — tolerant спасет.
+	// In TAR, an error will come from the Next() loop if the structure is completely broken,
+	// but if Next() succeeded and Copy() failed, tolerant mode will save it.
 	_ = err
 
 	if _, err := os.Stat(filepath.Join(dstDir, "good1.txt")); err != nil {
