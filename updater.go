@@ -102,15 +102,7 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 
 		if hdr.Name == name {
 			targetStart = headerOffset
-			nextHeaderOffset := tr.pos
-			_, nextErr := trd.Next()
-			if nextErr == io.EOF {
-				targetEnd = endOfArchive
-			} else if nextErr == nil {
-				targetEnd = nextHeaderOffset
-			} else {
-				targetEnd = endOfArchive
-			}
+			targetEnd = tr.pos + ((hdr.Size + 511) &^ 511)
 			break
 		}
 	}
