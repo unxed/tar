@@ -305,6 +305,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			}
 
 		name := hdr.Name
+		if strings.HasPrefix(name, MappedStringMarkStr) {
+			name = string(encodeMappedString(name))
+		}
 		if e.options.stripComponents > 0 {
 			stripped, ok := stripComponents(name, e.options.stripComponents)
 			if !ok {
@@ -632,17 +635,25 @@ func (e *Extractor) Extract(ctx context.Context) error {
 
 	// Restore symlinks and hardlinks in the second phase
 	for _, hdr := range links {
-		path, err := filepath.Abs(filepath.Join(e.chroot, hdr.Name))
+		hdrName := hdr.Name
+		if strings.HasPrefix(hdrName, MappedStringMarkStr) {
+			hdrName = string(encodeMappedString(hdrName))
+		}
+		path, err := filepath.Abs(filepath.Join(e.chroot, hdrName))
 		if err != nil {
 			return err
 		}
 		os.Remove(path) // Ignore error
+		hdrLinkname := hdr.Linkname
+		if strings.HasPrefix(hdrLinkname, MappedStringMarkStr) {
+			hdrLinkname = string(encodeMappedString(hdrLinkname))
+		}
 		if hdr.Typeflag == TypeSymlink {
-			if err := os.Symlink(hdr.Linkname, path); err != nil {
+			if err := os.Symlink(hdrLinkname, path); err != nil {
 				return err
 			}
 		} else {
-			targetPath := filepath.Join(e.chroot, hdr.Linkname)
+			targetPath := filepath.Join(e.chroot, hdrLinkname)
 			if err := os.Link(targetPath, path); err != nil {
 				return err
 			}

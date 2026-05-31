@@ -3,53 +3,49 @@ package tar
 import (
 	"archive/tar"
 	"io"
-	"os"
     "errors"
 )
 
 type ReadCloser struct {
 	*tar.Reader
-	f     *os.File
+	f     io.Closer
 	dcomp io.ReadCloser
 }
 
 // OpenReader opens a TAR or compressed TAR file (.tar, .tar.gz, .tar.zst, etc.).
 func OpenReader(name string) (*ReadCloser, error) {
-	f, err := os.Open(name)
+	ra, size, closer, err := openMultiVolume(name)
 	if err != nil {
 		return nil, err
 	}
 
-	method, err := DetectFormat(f)
+	method, err := DetectFormat(ra)
 	if err != nil {
-		f.Close()
+		closer.Close()
 		return nil, err
 	}
 
-	var rd io.Reader = f
+	var rd io.Reader = io.NewSectionReader(ra, 0, size)
 	var dcomp io.ReadCloser
 
 	if method != Store {
 		di, ok := decompressors.Load(method)
 		if !ok {
-			f.Close()
+			closer.Close()
 			return nil, ErrAlgorithm
 		}
 
-		f.Seek(0, io.SeekStart)
-		dcomp, err = di.(Decompressor).Decompress(f)
+		dcomp, err = di.(Decompressor).Decompress(rd)
 		if err != nil {
-			f.Close()
+			closer.Close()
 			return nil, err
 		}
 		rd = dcomp
-	} else {
-		f.Seek(0, io.SeekStart)
 	}
 
 	return &ReadCloser{
 		Reader: tar.NewReader(rd),
-		f:      f,
+		f:      closer,
 		dcomp:  dcomp,
 	}, nil
 }

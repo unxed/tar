@@ -20,10 +20,6 @@ type Updater struct {
 }
 
 // NewUpdater opens an UNCOMPRESSED .tar file for appending.
-// Appending to a compressed TAR (.tar.gz, etc) is complex because it requires
-// either concatenating a new compression stream (which some readers don't support well)
-// or fully rewriting the archive. Ratarmount supports concatenated streams, but standard
-// tools behave unpredictably. So we strictly support uncompressed tar here for now.
 func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 	if mode != APPEND_MODE_OVERWRITE {
 		return nil, errors.New("tar: only APPEND_MODE_OVERWRITE is supported")
@@ -34,8 +30,6 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 		return nil, err
 	}
 
-	// Seek backwards to find the standard tar EOF markers (two 512-byte blocks of zeros).
-	// We search in the last 10KB.
 	searchSize := int64(10240)
 	if stat.Size() < searchSize {
 		searchSize = stat.Size()
@@ -51,8 +45,6 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 		return nil, err
 	}
 
-	// Find where the sequence of trailing zeros begins.
-	// A valid tar ends with 1024 zero bytes, but there might be padding.
 	zeroBlocksStart := -1
 	for i := len(buf) - 512; i >= 0; i -= 512 {
 		if bytes.Equal(buf[i:i+512], make([]byte, 512)) {
@@ -63,7 +55,6 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 	}
 
 	if zeroBlocksStart != -1 {
-		// Truncate the file at the start of the zero blocks so we can append there.
 		truncateTo := stat.Size() - searchSize + int64(zeroBlocksStart)
 		if err := f.Truncate(truncateTo); err != nil {
 			return nil, err
@@ -72,7 +63,6 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 			return nil, err
 		}
 	} else {
-		// No zero blocks found, just seek to end
 		f.Seek(0, io.SeekEnd)
 	}
 
@@ -84,6 +74,85 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 
 // Append creates a new file entry in the archive.
 func (u *Updater) Append(name string, size int64, data []byte) error {
+	if _, err := u.f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
+	stat, err := u.f.Stat()
+	if err != nil {
+		return err
+	}
+	endOfArchive := stat.Size()
+
+	tr := &trackingReader{r: u.f}
+	trd := NewReader(tr)
+
+	var targetStart int64 = -1
+	var targetEnd int64 = -1
+
+	for {
+		headerOffset := tr.pos
+		hdr, err := trd.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+
+		if hdr.Name == name {
+			targetStart = headerOffset
+			nextHeaderOffset := tr.pos
+			_, nextErr := trd.Next()
+			if nextErr == io.EOF {
+				targetEnd = endOfArchive
+			} else if nextErr == nil {
+				targetEnd = nextHeaderOffset
+			} else {
+				targetEnd = endOfArchive
+			}
+			break
+		}
+	}
+
+	if targetStart != -1 && targetEnd != -1 {
+		removeSize := targetEnd - targetStart
+		if targetEnd < endOfArchive {
+			const chunkBufSize = 32 * 1024
+			buffer := make([]byte, chunkBufSize)
+			rp := targetEnd
+			wp := targetStart
+			for rp < endOfArchive {
+				n, err := u.f.ReadAt(buffer, rp)
+				if err != nil && err != io.EOF {
+					return err
+				}
+				if n == 0 {
+					break
+				}
+				_, err = u.f.WriteAt(buffer[:n], wp)
+				if err != nil {
+					return err
+				}
+				rp += int64(n)
+				wp += int64(n)
+			}
+		}
+		newSize := endOfArchive - removeSize
+		if err := u.f.Truncate(newSize); err != nil {
+			return err
+		}
+		if _, err := u.f.Seek(newSize, io.SeekStart); err != nil {
+			return err
+		}
+		u.tw = NewWriter(u.f)
+	} else {
+		if _, err := u.f.Seek(0, io.SeekEnd); err != nil {
+			return err
+		}
+		u.tw = NewWriter(u.f)
+	}
+
 	hdr := &tar.Header{
 		Name: name,
 		Mode: 0644,

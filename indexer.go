@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 type trackingReader struct {
@@ -57,25 +58,24 @@ func insertParentFolders(p string, batch *[]FileNode, seen map[string]bool) {
 
 // IndexArchive scans the archive and creates a ratarmount-compatible SQLite index.
 func IndexArchive(archivePath, indexPath string) error {
-	f, err := os.Open(archivePath)
+	ra, size, closer, err := openMultiVolume(archivePath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer closer.Close()
 
-	method, err := DetectFormat(f)
+	method, err := DetectFormat(ra)
 	if err != nil {
 		return err
 	}
-	f.Seek(0, io.SeekStart)
 
-	var rd io.Reader = f
+	var rd io.Reader = io.NewSectionReader(ra, 0, size)
 	if method != Store {
 		di, ok := decompressors.Load(method)
 		if !ok {
 			return ErrAlgorithm
 		}
-		dcomp, err := di.(Decompressor).Decompress(f)
+		dcomp, err := di.(Decompressor).Decompress(rd)
 		if err != nil {
 			return err
 		}
@@ -111,8 +111,28 @@ func IndexArchive(archivePath, indexPath string) error {
 			return err
 		}
 
-		insertParentFolders(hdr.Name, &batch, seenParents)
-		dir, name := normalizePath(hdr.Name)
+		hdrName := hdr.Name
+		if !utf8.ValidString(hdrName) {
+			hdrName = decodeUTF8OrMap([]byte(hdrName))
+		}
+		hdrLinkname := hdr.Linkname
+		if !utf8.ValidString(hdrLinkname) {
+			hdrLinkname = decodeUTF8OrMap([]byte(hdrLinkname))
+		}
+
+		insertParentFolders(hdrName, &batch, seenParents)
+		dir, name := normalizePath(hdrName)
+
+		var xattrs []string
+		var acl string
+		for k, v := range hdr.PAXRecords {
+			if strings.HasPrefix(k, "SCHILY.xattr.") || strings.HasPrefix(k, "LIBARCHIVE.xattr.") {
+				xattrs = append(xattrs, k+"="+v)
+			} else if k == "MSWINDOWS.raw_sd" {
+				acl = v
+			}
+		}
+		xattrsStr := strings.Join(xattrs, ";")
 
 		node := FileNode{
 			Path:         dir,
@@ -123,11 +143,13 @@ func IndexArchive(archivePath, indexPath string) error {
 			Mode:         int64(hdr.Mode),
 			ModTime:      hdr.ModTime,
 			Type:         hdr.Typeflag,
-			LinkName:     hdr.Linkname,
+			LinkName:     hdrLinkname,
 			Uid:          hdr.Uid,
 			Gid:          hdr.Gid,
 			IsSparse:     hdr.Typeflag == TypeGNUSparse || hdr.Typeflag == 'S',
 			IsTar:        true,
+			Xattrs:       xattrsStr,
+			Acl:          acl,
 		}
 		batch = append(batch, node)
 

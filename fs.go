@@ -22,6 +22,7 @@ type TarFS struct {
 	Index       *Index
 	method      uint16
 	xzBlocks    []BlockOffset
+	closer      io.Closer
 }
 
 // NewFS opens a tar archive as a standard Go fs.FS (File System).
@@ -42,29 +43,26 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		}
 	}
 
-	f, err := os.Open(archivePath)
+	ra, size, closer, err := openMultiVolume(archivePath)
 	if err != nil {
 		return nil, err
 	}
-	method, err := DetectFormat(f)
-	f.Close()
+
+	method, err := DetectFormat(ra)
 	if err != nil {
+		closer.Close()
 		return nil, err
 	}
 
 	idx, err := OpenIndex(indexPath)
 	if err != nil {
+		closer.Close()
 		return nil, err
 	}
 
 	var xzBlocks []BlockOffset
 	if method == XZ {
-		f, err := os.Open(archivePath)
-		if err == nil {
-			fi, _ := f.Stat()
-			xzBlocks, _ = parseXZIndex(f, fi.Size())
-			f.Close()
-		}
+		xzBlocks, _ = parseXZIndex(ra, size)
 	}
 
 	return &TarFS{
@@ -73,6 +71,7 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		Index:       idx,
 		method:      method,
 		xzBlocks:    xzBlocks,
+		closer:      closer,
 	}, nil
 }
 func GetStandardIndexPath(archivePath string) (string, error) {
@@ -196,7 +195,15 @@ func parseXZIndex(r io.ReaderAt, fileSize int64) ([]BlockOffset, error) {
 }
 
 func (t *TarFS) Close() error {
-	return t.Index.Close()
+	var err1, err2 error
+	err1 = t.Index.Close()
+	if t.closer != nil {
+		err2 = t.closer.Close()
+	}
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }
 
 func (t *TarFS) RecursiveSize(name string) (int64, error) {
@@ -217,7 +224,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		return &dirFile{node: node, tfs: t, offset: 0}, nil
 	}
 
-	f, err := os.Open(t.ArchivePath)
+	ra, size, closer, err := openMultiVolume(t.ArchivePath)
 	if err != nil {
 		return nil, err
 	}
@@ -230,22 +237,22 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 	// For uncompressed TARs, random access is instantaneous O(1) via SectionReader.
 	if t.method == Store {
 		if node.IsSparse {
-			f.Seek(targetOffset, io.SeekStart)
-			tr := NewReader(f)
+			sr := io.NewSectionReader(ra, targetOffset, size - targetOffset)
+			tr := NewReader(sr)
 			if _, err := tr.Next(); err != nil {
-				f.Close()
+				closer.Close()
 				return nil, err
 			}
-			return &tarFile{node: node, r: tr, c: f}, nil
+			return &tarFile{node: node, r: tr, c: closer}, nil
 		}
-		sr := io.NewSectionReader(f, targetOffset, node.Size)
-		return &tarFile{node: node, r: sr, c: f}, nil
+		sr := io.NewSectionReader(ra, targetOffset, node.Size)
+		return &tarFile{node: node, r: sr, c: closer}, nil
 	}
 
 	// Emulate random access for compressed streams.
 	di, ok := decompressors.Load(t.method)
 	if !ok {
-		f.Close()
+		closer.Close()
 		return nil, ErrAlgorithm
 	}
 	decompressorObj := di.(Decompressor)
@@ -265,9 +272,9 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 
 		if best != nil {
 			var header [12]byte
-			_, err = f.ReadAt(header[:], 0)
+			_, err = ra.ReadAt(header[:], 0)
 			if err == nil {
-				sr := io.NewSectionReader(f, best.BlockOffset, 1<<63-1)
+				sr := io.NewSectionReader(ra, best.BlockOffset, 1<<63-1)
 				mr := io.MultiReader(bytes.NewReader(header[:]), sr)
 				xr, err := xz.NewReader(mr)
 				if err == nil {
@@ -276,7 +283,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 					if remaining > 0 {
 						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 							dcomp.Close()
-							f.Close()
+							closer.Close()
 							return nil, err
 						}
 					}
@@ -285,13 +292,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						tr := NewReader(dcomp)
 						if _, err := tr.Next(); err != nil {
 							dcomp.Close()
-							f.Close()
+							closer.Close()
 							return nil, err
 						}
-						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, f}}, nil
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, closer}}, nil
 					}
 					lr := io.LimitReader(dcomp, node.Size)
-					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, closer}}, nil
 				}
 			}
 		}
@@ -309,13 +316,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		if importer, ok := di.(BlockOffsetImporter); ok {
 			bo, err := t.Index.GetClosestBlockOffset(table, targetOffset)
 			if err == nil && bo != nil {
-				dcomp, err = importer.ResumeFromBlockOffset(f, bo)
+				dcomp, err = importer.ResumeFromBlockOffset(ra, bo)
 				if err == nil {
 					remaining := targetOffset - bo.DataOffset
 					if remaining > 0 {
 						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 							dcomp.Close()
-							f.Close()
+							closer.Close()
 							return nil, err
 						}
 					}
@@ -324,13 +331,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						tr := NewReader(dcomp)
 						if _, err := tr.Next(); err != nil {
 							dcomp.Close()
-							f.Close()
+							closer.Close()
 							return nil, err
 						}
-						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, f}}, nil
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, closer}}, nil
 					}
 					lr := io.LimitReader(dcomp, node.Size)
-					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, closer}}, nil
 				}
 			}
 		}
@@ -341,7 +348,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		if importer, ok := di.(GzipIndexImporter); ok {
 			indexData, err := t.Index.GetGzipIndex()
 			if err == nil && len(indexData) > 0 {
-				dcomp, uncompOffset, err := importer.ResumeFromGzipIndex(f, indexData, targetOffset)
+				dcomp, uncompOffset, err := importer.ResumeFromGzipIndex(ra, indexData, targetOffset)
 				if err == nil {
 					// GZIP index seekable decoder can Seek() directly inside dcomp
 					if seeker, ok := dcomp.(io.ReadSeeker); ok {
@@ -351,7 +358,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						if remaining > 0 {
 							if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 								dcomp.Close()
-								f.Close()
+								closer.Close()
 								return nil, err
 							}
 						}
@@ -361,30 +368,30 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						tr := NewReader(dcomp)
 						if _, err := tr.Next(); err != nil {
 							dcomp.Close()
-							f.Close()
+							closer.Close()
 							return nil, err
 						}
-						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, f}}, nil
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, closer}}, nil
 					}
 					lr := io.LimitReader(dcomp, node.Size)
-					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, closer}}, nil
 				}
 			}
 		}
 	}
 
 	// O(N) Fallback path: decompress from the beginning
-	f.Seek(0, io.SeekStart)
-	dcomp, err = decompressorObj.Decompress(f)
+	sr := io.NewSectionReader(ra, 0, size)
+	dcomp, err = decompressorObj.Decompress(sr)
 	if err != nil {
-		f.Close()
+		closer.Close()
 		return nil, err
 	}
 
 	_, err = io.CopyN(io.Discard, dcomp, targetOffset)
 	if err != nil && err != io.EOF {
 		dcomp.Close()
-		f.Close()
+		closer.Close()
 		return nil, err
 	}
 
@@ -392,13 +399,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		tr := NewReader(dcomp)
 		if _, err := tr.Next(); err != nil {
 			dcomp.Close()
-			f.Close()
+			closer.Close()
 			return nil, err
 		}
-		return &tarFile{node: node, r: tr, c: multiCloser{dcomp, f}}, nil
+		return &tarFile{node: node, r: tr, c: multiCloser{dcomp, closer}}, nil
 	}
 	lr := io.LimitReader(dcomp, node.Size)
-	return &tarFile{node: node, r: lr, c: multiCloser{dcomp, f}}, nil
+	return &tarFile{node: node, r: lr, c: multiCloser{dcomp, closer}}, nil
 }
 
 type multiCloser []io.Closer
