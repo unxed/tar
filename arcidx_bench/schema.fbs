@@ -1,0 +1,50 @@
+namespace arcidx;
+
+// Deduplicated metadata tuples
+struct MetadataTuple {
+  mode: uint32;
+  uid: uint32;
+  gid: uint32;
+  mtime: int64;
+}
+
+table Xattr {
+  key: string;
+  value: [ubyte];
+}
+
+// Block offsets for ZSTD/BZIP2
+struct BlockOffset {
+  block_offset: int64;
+  data_offset: int64;
+}
+
+table FileNode {
+  path_id: uint32;       // Index into ArchiveIndex.paths
+  name: string;
+  offset_header: int64;
+  offset_data: int64;    // Direct offset for O(1) random access
+  size: int64;
+  type_flag: ubyte;      // TAR typeflag
+  link_name: string;
+  is_tar: bool = false;
+  is_sparse: bool = false;
+  is_generated: bool = false;
+  recursion_depth: int32 = 0;
+  metadata_id: uint32;   // Index into ArchiveIndex.metadata_tuples
+  xattrs: [Xattr];
+  acl: [ubyte];
+}
+
+table ArchiveIndex {
+  version: int32 = 1;
+  backend_name: string;
+  paths: [string];                       // Deduplicated directory paths
+  metadata_tuples: [MetadataTuple];      // Deduplicated mode/uid/gid/mtime
+  files: [FileNode];                     // Ordered by path_id -> name for binary search
+  zstd_blocks: [BlockOffset];
+  bzip2_blocks: [BlockOffset];
+  gzip_index: [ubyte];                   // Binary GZIDX blob
+}
+
+root_type ArchiveIndex;

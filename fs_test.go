@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"encoding/binary"
+	"runtime"
+	"strings"
 
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
@@ -102,6 +104,42 @@ func TestTarFS_DefaultCache(t *testing.T) {
 
 	if _, err := os.Stat(tfs.IndexPath); os.IsNotExist(err) {
 		t.Errorf("Standard index file not created at %s", tfs.IndexPath)
+	}
+}
+func TestGetStandardIndexPath_SidecarAndFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. Test Writable Directory (Should use Sidecar)
+	writableArchive := filepath.Join(tmpDir, "writable_archive.tar")
+	idxPath, err := GetStandardIndexPath(writableArchive)
+	if err != nil {
+		t.Fatalf("Failed to get index path: %v", err)
+	}
+	expectedSidecar := writableArchive + ".index.sqlite"
+	if idxPath != expectedSidecar {
+		t.Errorf("Expected sidecar path %q, got %q", expectedSidecar, idxPath)
+	}
+	os.Remove(idxPath)
+
+	// 2. Test Read-Only Directory (Should Fallback to Cache)
+	if runtime.GOOS != "windows" {
+		readOnlyDir := filepath.Join(tmpDir, "readonly")
+		if err := os.MkdirAll(readOnlyDir, 0555); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(readOnlyDir, 0755)
+
+		readOnlyArchive := filepath.Join(readOnlyDir, "readonly_archive.tar")
+		idxPathFallback, err := GetStandardIndexPath(readOnlyArchive)
+		if err != nil {
+			t.Fatalf("Failed to get fallback index path: %v", err)
+		}
+		if idxPathFallback == readOnlyArchive+".index.sqlite" {
+			t.Error("Expected index path to fall back to cache directory, but got sidecar path in read-only directory")
+		}
+		if !strings.Contains(idxPathFallback, "ratarmount") && !strings.Contains(idxPathFallback, ".cache") {
+			t.Errorf("Expected fallback path to be in cache directory, got %q", idxPathFallback)
+		}
 	}
 }
 

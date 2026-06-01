@@ -74,12 +74,25 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		closer:      closer,
 	}, nil
 }
+// GetStandardIndexPath attempts to place the SQLite index next to the archive (sidecar).
+// If the directory is read-only, it falls back to the user's cache directory.
 func GetStandardIndexPath(archivePath string) (string, error) {
 	absPath, err := filepath.Abs(archivePath)
 	if err != nil {
 		return "", err
 	}
 
+	// Try sidecar file first (ratarmount default behavior)
+	sidecarPath := absPath + ".index.sqlite"
+
+	// Test if we can write to the sidecar location
+	f, err := os.OpenFile(sidecarPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err == nil {
+		f.Close()
+		return sidecarPath, nil
+	}
+
+	// Fallback to cache directory if archive directory is read-only
 	var cacheDir string
 	if runtime.GOOS == "windows" {
 		cacheDir = os.Getenv("LOCALAPPDATA")
@@ -100,7 +113,8 @@ func GetStandardIndexPath(archivePath string) (string, error) {
 	}
 
 	if err := os.MkdirAll(cacheDir, 0700); err != nil {
-		return absPath + ".index.sqlite", nil
+		// If even cache dir creation fails, try sidecar anyway (it will fail later, but it's the last resort)
+		return sidecarPath, nil
 	}
 
 	cleanName := strings.Map(func(r rune) rune {
