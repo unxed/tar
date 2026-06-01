@@ -1,50 +1,43 @@
 namespace arcidx;
 
-// Deduplicated metadata tuples
+// Deduplicated metadata tuples. Structs in FlatBuffers are inlined and zero-copy.
 struct MetadataTuple {
   mode: uint32;
   uid: uint32;
   gid: uint32;
-  mtime: int64;
+  recursion_depth: uint32;
+  type_flag: ubyte;
+  is_tar: bool;
+  is_sparse: bool;
+  is_generated: bool;
 }
 
 table Xattr {
-  key: string;
+  key_id: uint32;        // Index into ArchiveIndex.xattr_keys
   value: [ubyte];
-}
-
-// Block offsets for ZSTD/BZIP2
-struct BlockOffset {
-  block_offset: int64;
-  data_offset: int64;
 }
 
 table FileNode {
   path_id: uint32;       // Index into ArchiveIndex.paths
   name: string;
-  offset_header: int64;
-  offset_data: int64;    // Direct offset for O(1) random access
-  size: int64;
-  type_flag: ubyte;      // TAR typeflag
-  link_name: string;
-  is_tar: bool = false;
-  is_sparse: bool = false;
-  is_generated: bool = false;
-  recursion_depth: int32 = 0;
+  offset_header: uint64;
+  offset_data: uint64;
+  size: uint64;
+  mtime: int64;          // Moved here as it varies per file
   metadata_id: uint32;   // Index into ArchiveIndex.metadata_tuples
   xattrs: [Xattr];
   acl: [ubyte];
 }
 
 table ArchiveIndex {
-  version: int32 = 1;
+  version: uint8 = 1;
   backend_name: string;
   paths: [string];                       // Deduplicated directory paths
-  metadata_tuples: [MetadataTuple];      // Deduplicated mode/uid/gid/mtime
+  xattr_keys: [string];                  // Deduplicated xattr keys
+  metadata_tuples: [MetadataTuple];
   files: [FileNode];                     // Ordered by path_id -> name for binary search
-  zstd_blocks: [BlockOffset];
-  bzip2_blocks: [BlockOffset];
-  gzip_index: [ubyte];                   // Binary GZIDX blob
+  compression_format: string;            // e.g., "gzidx", "gztool_index", "indexed_zstd"
+  compression_blob: [ubyte];             // Unified binary blob for the compression index
 }
 
 root_type ArchiveIndex;
