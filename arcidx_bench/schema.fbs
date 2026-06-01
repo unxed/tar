@@ -27,6 +27,7 @@ table FileNode {
   metadata_id: uint32;   // Index into ArchiveIndex.metadata_tuples
   xattrs: [Xattr];
   acl: [ubyte];
+  link_name: string;
 }
 
 table ArchiveIndex {

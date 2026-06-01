@@ -48,6 +48,7 @@ type MockFileNode struct {
     MetadataID   uint32
     Xattrs       []MockXattr
     Acl          []byte
+    LinkName     string
 }
 
 func setupSQLiteDB(b testing.TB, numFiles int) *sql.DB {
