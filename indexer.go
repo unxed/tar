@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"unicode/utf8"
+	"encoding/base64"
 )
 
 type trackingReader struct {
@@ -123,16 +124,24 @@ func IndexArchive(archivePath, indexPath string) error {
 		insertParentFolders(hdrName, &batch, seenParents)
 		dir, name := normalizePath(hdrName)
 
-		var xattrs []string
-		var acl string
+		var xattrs map[string][]byte
+		var acl []byte
 		for k, v := range hdr.PAXRecords {
-			if strings.HasPrefix(k, "SCHILY.xattr.") || strings.HasPrefix(k, "LIBARCHIVE.xattr.") {
-				xattrs = append(xattrs, k+"="+v)
+			if strings.HasPrefix(k, "SCHILY.xattr.") {
+				if xattrs == nil { xattrs = make(map[string][]byte) }
+				xattrs[strings.TrimPrefix(k, "SCHILY.xattr.")] = []byte(v)
+			} else if strings.HasPrefix(k, "LIBARCHIVE.xattr.") {
+				if xattrs == nil { xattrs = make(map[string][]byte) }
+				xattrs[strings.TrimPrefix(k, "LIBARCHIVE.xattr.")] = []byte(v)
 			} else if k == "MSWINDOWS.raw_sd" {
-				acl = v
+				dec, err := base64.StdEncoding.DecodeString(v)
+				if err == nil {
+					acl = dec
+				} else {
+					acl = []byte(v)
+				}
 			}
 		}
-		xattrsStr := strings.Join(xattrs, ";")
 
 		node := FileNode{
 			Path:         dir,
@@ -148,7 +157,7 @@ func IndexArchive(archivePath, indexPath string) error {
 			Gid:          hdr.Gid,
 			IsSparse:     hdr.Typeflag == TypeGNUSparse || hdr.Typeflag == 'S',
 			IsTar:        true,
-			Xattrs:       xattrsStr,
+			Xattrs:       xattrs,
 			Acl:          acl,
 		}
 		batch = append(batch, node)

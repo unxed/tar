@@ -55,8 +55,8 @@ type FileNode struct {
 	IsSparse       bool
 	IsGenerated    bool
 	RecursionDepth int
-	Xattrs         string
-	Acl            string
+	Xattrs         map[string][]byte
+	Acl            []byte
 }
 
 type Index struct {
@@ -110,11 +110,24 @@ func OpenIndex(dsn string) (*Index, error) {
 		"issparse"       BOOL,
 		"isgenerated"    BOOL,
 		"recursiondepth" INTEGER,
-		"xattrs"         TEXT,
-		"acl"            TEXT,
 		PRIMARY KEY ("path","name","offsetheader")
 	);
 	CREATE INDEX IF NOT EXISTS files_offsetheader_index ON files(offsetheader);
+
+	CREATE TABLE IF NOT EXISTS xattrs (
+		"offsetheader" INTEGER,
+		"key"          TEXT,
+		"value"        BLOB,
+		FOREIGN KEY(offsetheader) REFERENCES files(offsetheader) ON DELETE CASCADE
+	);
+	CREATE INDEX IF NOT EXISTS xattrs_offsetheader_index ON xattrs(offsetheader);
+
+	CREATE TABLE IF NOT EXISTS acls (
+		"offsetheader" INTEGER,
+		"acl"          BLOB,
+		FOREIGN KEY(offsetheader) REFERENCES files(offsetheader) ON DELETE CASCADE
+	);
+	CREATE INDEX IF NOT EXISTS acls_offsetheader_index ON acls(offsetheader);
 
 	CREATE TABLE IF NOT EXISTS metadata (
 		key VARCHAR(65535) NOT NULL PRIMARY KEY,
@@ -160,8 +173,8 @@ func (idx *Index) Insert(nodes []FileNode) error {
 	stmt, err := tx.Prepare(`
 		INSERT INTO files (
 			path, name, offsetheader, offset, size, mtime, mode, type,
-			linkname, uid, gid, istar, issparse, isgenerated, recursiondepth, xattrs, acl
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			linkname, uid, gid, istar, issparse, isgenerated, recursiondepth
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT DO NOTHING
 	`)
 	if err != nil {
@@ -170,15 +183,46 @@ func (idx *Index) Insert(nodes []FileNode) error {
 	}
 	defer stmt.Close()
 
+	stmtXattr, err := tx.Prepare(`INSERT INTO xattrs (offsetheader, key, value) VALUES (?, ?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmtXattr.Close()
+
+	stmtAcl, err := tx.Prepare(`INSERT INTO acls (offsetheader, acl) VALUES (?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmtAcl.Close()
+
 	for _, n := range nodes {
-		_, err = stmt.Exec(
+		res, err := stmt.Exec(
 			n.Path, n.Name, n.OffsetHeader, n.Offset, n.Size, float64(n.ModTime.UnixNano())/1e9,
 			n.Mode, n.Type, n.LinkName, n.Uid, n.Gid, n.IsTar, n.IsSparse, n.IsGenerated, n.RecursionDepth,
-			n.Xattrs, n.Acl,
 		)
 		if err != nil {
 			tx.Rollback()
 			return err
+		}
+
+		aff, _ := res.RowsAffected()
+		if aff > 0 {
+			for k, v := range n.Xattrs {
+				_, err = stmtXattr.Exec(n.OffsetHeader, k, v)
+				if err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
+			if len(n.Acl) > 0 {
+				_, err = stmtAcl.Exec(n.OffsetHeader, n.Acl)
+				if err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
 		}
 	}
 
@@ -196,7 +240,7 @@ func (idx *Index) Lookup(p string) (*FileNode, error) {
 	}
 
 	row := idx.db.QueryRow(`
-		SELECT offsetheader, offset, size, mtime, mode, type, linkname, uid, gid, istar, issparse, isgenerated, recursiondepth, xattrs, acl
+		SELECT offsetheader, offset, size, mtime, mode, type, linkname, uid, gid, istar, issparse, isgenerated, recursiondepth
 		FROM files
 		WHERE path = ? AND name = ?
 		ORDER BY offset DESC LIMIT 1
@@ -210,11 +254,25 @@ func (idx *Index) Lookup(p string) (*FileNode, error) {
 	err := row.Scan(
 		&n.OffsetHeader, &n.Offset, &n.Size, &mtime, &n.Mode, &n.Type,
 		&n.LinkName, &n.Uid, &n.Gid, &n.IsTar, &n.IsSparse, &n.IsGenerated, &n.RecursionDepth,
-		&n.Xattrs, &n.Acl,
 	)
 	if err != nil {
 		return nil, err
 	}
+
+	n.Xattrs = make(map[string][]byte)
+	xRows, err := idx.db.Query(`SELECT key, value FROM xattrs WHERE offsetheader = ?`, n.OffsetHeader)
+	if err == nil {
+		for xRows.Next() {
+			var k string
+			var v []byte
+			if xRows.Scan(&k, &v) == nil {
+				n.Xattrs[k] = v
+			}
+		}
+		xRows.Close()
+	}
+	aRow := idx.db.QueryRow(`SELECT acl FROM acls WHERE offsetheader = ?`, n.OffsetHeader)
+	aRow.Scan(&n.Acl)
 	n.ModTime = time.Unix(0, int64(mtime*1e9))
 	return &n, nil
 }
@@ -232,7 +290,7 @@ func (idx *Index) List(p string) ([]FileNode, error) {
 
 	// We group by name to avoid returning older versions of appended files
 	rows, err := idx.db.Query(`
-		SELECT name, offsetheader, offset, size, mtime, mode, type, linkname, uid, gid, istar, issparse, isgenerated, recursiondepth, xattrs, acl
+		SELECT name, offsetheader, offset, size, mtime, mode, type, linkname, uid, gid, istar, issparse, isgenerated, recursiondepth
 		FROM files
 		WHERE path = ?
 		GROUP BY name
@@ -251,13 +309,28 @@ func (idx *Index) List(p string) ([]FileNode, error) {
 		err := rows.Scan(
 			&n.Name, &n.OffsetHeader, &n.Offset, &n.Size, &mtime, &n.Mode, &n.Type,
 			&n.LinkName, &n.Uid, &n.Gid, &n.IsTar, &n.IsSparse, &n.IsGenerated, &n.RecursionDepth,
-			&n.Xattrs, &n.Acl,
 		)
 		if err != nil {
 			return nil, err
 		}
 		n.ModTime = time.Unix(0, int64(mtime*1e9))
 		res = append(res, n)
+	}
+	for i := range res {
+		res[i].Xattrs = make(map[string][]byte)
+		xRows, err := idx.db.Query(`SELECT key, value FROM xattrs WHERE offsetheader = ?`, res[i].OffsetHeader)
+		if err == nil {
+			for xRows.Next() {
+				var k string
+				var v []byte
+				if xRows.Scan(&k, &v) == nil {
+					res[i].Xattrs[k] = v
+				}
+			}
+			xRows.Close()
+		}
+		aRow := idx.db.QueryRow(`SELECT acl FROM acls WHERE offsetheader = ?`, res[i].OffsetHeader)
+		aRow.Scan(&res[i].Acl)
 	}
 	return res, nil
 }

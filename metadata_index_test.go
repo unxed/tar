@@ -43,10 +43,10 @@ func TestMetadataIndexing_XattrsAndACL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if node.Xattrs != "SCHILY.xattr.user.test=value123" {
-		t.Errorf("Xattrs not found in index: got %q", node.Xattrs)
+	if string(node.Xattrs["user.test"]) != "value123" {
+		t.Errorf("Xattrs not found in index: got %v", node.Xattrs)
 	}
-	if node.Acl != "base64-acl-data" {
-		t.Errorf("ACL not found in index: got %q", node.Acl)
+	if string(node.Acl) != "base64-acl-data" {
+		t.Errorf("ACL not found in index: got %q", string(node.Acl))
 	}
 }
