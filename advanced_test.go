@@ -565,3 +565,71 @@ func TestExtractor_ConcurrencyIntegrity(t *testing.T) {
 		}
 	}
 }
+
+// TestEmbeddedIndex_Roundtrip verifies that embedded indexes (F4SS) can be written and cleanly restored.
+func TestEmbeddedIndex_Roundtrip(t *testing.T) {
+	methods := []uint16{Store, GZIP, ZSTD}
+
+	for _, method := range methods {
+		t.Run(fmt.Sprintf("Method_%d", method), func(t *testing.T) {
+			tmpDir := t.TempDir()
+			srcDir := filepath.Join(tmpDir, "src")
+			os.MkdirAll(srcDir, 0755)
+
+			filePath := filepath.Join(srcDir, "test.txt")
+			os.WriteFile(filePath, []byte("embedded index verification data"), 0644)
+
+			archivePath := filepath.Join(tmpDir, "archive.tar")
+			switch method {
+			case GZIP:
+				archivePath += ".gz"
+			case ZSTD:
+				archivePath += ".zst"
+			}
+
+			indexPath := filepath.Join(tmpDir, "index.sqlite")
+
+			// 1. Archive with Embedded Index (F4SS)
+			a, err := NewArchiver(archivePath, tmpDir,
+				WithArchiverMethod(method),
+				WithArchiverIndex(indexPath),
+				WithArchiverEmbeddedIndex(true),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			fi, _ := os.Stat(filePath)
+			files := map[string]os.FileInfo{filePath: fi}
+
+			if err := a.Archive(context.Background(), files); err != nil {
+				t.Fatal(err)
+			}
+			a.Close()
+
+			// 2. Open archive with a completely fresh, non-existent index path
+			// to force the reader to extract the embedded index.
+			freshIndexPath := filepath.Join(tmpDir, "fresh_index.sqlite")
+			tfs, err := NewFS(archivePath, freshIndexPath)
+			if err != nil {
+				t.Fatalf("Failed to open TarFS using embedded index: %v", err)
+			}
+			defer tfs.Close()
+
+			// Ensure it marked the index as temporary (since we recovered it from shadow stream)
+			if !tfs.isTemporaryIndex {
+				t.Errorf("Expected isTemporaryIndex to be true")
+			}
+
+			// 3. Read back file and verify contents
+			data, err := fs.ReadFile(tfs, "src/test.txt")
+			if err != nil {
+				t.Fatalf("Failed to read file from embedded index TarFS: %v", err)
+			}
+
+			if string(data) != "embedded index verification data" {
+				t.Errorf("Content mismatch: expected 'embedded index verification data', got %q", string(data))
+			}
+		})
+	}
+}

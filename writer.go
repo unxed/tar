@@ -178,20 +178,20 @@ func (wc *WriteCloser) createSeekPoint() {
 }
 
 func (wc *WriteCloser) Close() error {
+	// If embedded index is enabled, Close is handled entirely by Archiver.Close
+	// to allow starting a new shadow stream. WriteCloser.Close() should only
+	// do the standard cleanup when used standalone.
 	var err1, err2, err3 error
-	err1 = wc.Writer.Close() // Flushes tar EOF blocks
+	err1 = wc.Writer.Close()
 
 	if wc.idx != nil {
 		if len(wc.batch) > 0 {
 			wc.idx.Insert(wc.batch)
 		}
-
 		if wc.method == ZSTD && len(wc.zstdBlocks) > 0 {
 			wc.idx.InsertBlockOffsets("zstdblocks", wc.zstdBlocks)
 		}
-
 		if wc.method == GZIP && len(wc.gzPoints) > 0 {
-			// Construct GZIDX blob
 			gzidx := &gzipIndexTrackingReader{
 				points:       wc.gzPoints,
 				uncompOffset: wc.uncompTracker.pos,
@@ -206,7 +206,7 @@ func (wc *WriteCloser) Close() error {
 	}
 
 	if wc.comp != nil {
-		err2 = wc.comp.Close() // Flushes compression frame
+		err2 = wc.comp.Close()
 	}
 	if wc.f != nil {
 		err3 = wc.f.Close()

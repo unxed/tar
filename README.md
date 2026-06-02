@@ -29,6 +29,7 @@ This library is built with strict adherence to the following design constraints:
   * Exposes the archive as a standard Go `fs.FS` interface.
   * Facilitates **O(1) random-access** file reading for uncompressed `.tar` archives via `io.SectionReader`.
   * Automatically synthesizes missing parent folders on the fly.
+  * Supports **F4 Embedded TAR Index Format (F4SS)** which bundles the index directly inside `.tar`, `.tar.gz`, or `.tar.zst` archives natively and compliantly. Read [f4tar.md](./f4tar.md) for details.
 * **Unix Properties Preservation:** Transparently preserves and restores Symlinks, Hardlinks, Unix permissions, UID/GID (numeric & string), timestamps, and special files (Devices, FIFOs).
 * **NTFS & Windows Compatibility:** Supports reading, writing, and restoring Windows Security Descriptors (NTFS ACLs) via PAX extended headers, alongside physical pre-allocation to prevent file fragmentation on NTFS.
 * **Safe Extraction and Sanitization:** Implements automatic path verification to block symlink directory traversal attacks (such as Tar Slip), sanitizes Zone.Identifier (Mark of the Web) streams, and safely cleans up partial files on errors unless configured otherwise.

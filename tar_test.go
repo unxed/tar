@@ -1,6 +1,7 @@
 package tar
 
 import (
+    "context"
 	"bytes"
 	"io"
 	"os"
@@ -185,6 +186,89 @@ func TestTarExternalCompatibility_Tar(t *testing.T) {
 		} else {
 			verifyExtracted(dstDir, "bsdtar")
 		}
+	}
+}
+
+func TestEmbeddedIndexExternalCompatibility(t *testing.T) {
+	tarPath, err := exec.LookPath("tar")
+	hasTar := err == nil
+	bsdtarPath, err := exec.LookPath("bsdtar")
+	hasBsdTar := err == nil
+
+	if !hasTar && !hasBsdTar {
+		t.Skip("Neither native tar nor bsdtar found on this system. Skipping external compatibility check for embedded indexes.")
+	}
+
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src")
+	os.MkdirAll(srcDir, 0755)
+	os.WriteFile(filepath.Join(srcDir, "test.txt"), []byte("compat content"), 0644)
+
+	archivePath := filepath.Join(tmpDir, "embedded_compat.tar.gz")
+	indexPath := filepath.Join(tmpDir, "embedded_compat.sqlite")
+
+	a, err := NewArchiver(archivePath, tmpDir,
+		WithArchiverMethod(GZIP),
+		WithArchiverIndex(indexPath),
+		WithArchiverEmbeddedIndex(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fi, _ := os.Stat(filepath.Join(srcDir, "test.txt"))
+	files := map[string]os.FileInfo{filepath.Join(srcDir, "test.txt"): fi}
+	if err := a.Archive(context.Background(), files); err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+
+	verifyExtraction := func(binPath, name string, ignoreZeros bool) {
+		dstDir := filepath.Join(tmpDir, name+"_dst")
+		os.MkdirAll(dstDir, 0755)
+
+		args := []string{"-xzf", archivePath, "-C", dstDir}
+		if ignoreZeros {
+			args = append(args, "-i")
+		}
+
+		cmd := exec.Command(binPath, args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			if ignoreZeros && strings.Contains(err.Error(), "invalid option") {
+				return
+			}
+			t.Fatalf("%s failed: %v, output: %s", name, err, string(output))
+		}
+
+		// Verify main file is extracted
+		data, err := os.ReadFile(filepath.Join(dstDir, "src", "test.txt"))
+		if err != nil {
+			t.Fatalf("Failed to read file extracted by %s: %v", name, err)
+		}
+		if string(data) != "compat content" {
+			t.Errorf("Content mismatch: %q", string(data))
+		}
+
+		// Verify hidden index file is NOT extracted unless we used ignoreZeros
+		hiddenFile := filepath.Join(dstDir, ".f4.arcidx")
+		if ignoreZeros {
+			if _, err := os.Stat(hiddenFile); os.IsNotExist(err) {
+				t.Errorf("Expected hidden index .f4.arcidx to be extracted with -i flag")
+			}
+		} else {
+			if _, err := os.Stat(hiddenFile); err == nil {
+				t.Errorf("Hidden index .f4.arcidx was erroneously extracted without -i flag!")
+			}
+		}
+	}
+
+	if hasTar {
+		verifyExtraction(tarPath, "tar", false)
+		verifyExtraction(tarPath, "tar_ignore_zeros", true)
+	}
+	if hasBsdTar {
+		verifyExtraction(bsdtarPath, "bsdtar", false)
 	}
 }
 

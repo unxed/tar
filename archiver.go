@@ -19,6 +19,15 @@ type archiverOptions struct {
 	chroot      string
 	indexPath   string
 	xattrs      bool
+	embeddedIdx bool
+}
+
+// WithArchiverEmbeddedIndex appends the index directly inside the archive (F4 Shadow Stream).
+func WithArchiverEmbeddedIndex(b bool) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.embeddedIdx = b
+		return nil
+	}
 }
 
 // WithArchiverXattrs enables archiving of extended attributes (xattrs, POSIX ACLs, SELinux).
@@ -84,7 +93,96 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 }
 
 func (a *Archiver) Close() error {
-	return a.wc.Close()
+	if !a.options.embeddedIdx || a.options.indexPath == "" {
+		return a.wc.Close()
+	}
+
+	// We are building an embedded index. We need to close the current TAR stream
+	// (which writes the EOF zeros), flush the compressor, and start the shadow stream.
+	if err := a.wc.Writer.Close(); err != nil {
+		return err
+	}
+
+	idx := a.wc.idx
+	if idx != nil {
+		if len(a.wc.batch) > 0 {
+			idx.Insert(a.wc.batch)
+			a.wc.batch = a.wc.batch[:0]
+		}
+		if a.wc.method == ZSTD && len(a.wc.zstdBlocks) > 0 {
+			idx.InsertBlockOffsets("zstdblocks", a.wc.zstdBlocks)
+		}
+		if a.wc.method == GZIP && len(a.wc.gzPoints) > 0 {
+			gzidx := &gzipIndexTrackingReader{
+				points:       a.wc.gzPoints,
+				uncompOffset: a.wc.uncompTracker.pos,
+				spacing:      4 * 1024 * 1024,
+				tr:           &trackingByteReader{pos: a.wc.compTracker.pos},
+			}
+			if data, err := gzidx.ExportGzipIndex(); err == nil {
+				idx.SaveGzipIndex(data)
+			}
+		}
+	}
+
+	// Close the main compression stream to ensure independent boundaries
+	if a.wc.comp != nil {
+		a.wc.comp.Close()
+	}
+
+	// Read the generated SQLite index into memory
+	idxData, err := os.ReadFile(a.options.indexPath)
+	if err != nil {
+		a.wc.f.Close()
+		return err
+	}
+
+	// Close the SQLite handle and remove the temporary file since we embed it
+	idx.Close()
+	os.Remove(a.options.indexPath)
+
+	// Begin Stream 2: The Shadow Stream
+	shadowStartOffset := a.wc.compTracker.pos
+
+	// Restart compressor for Stream 2
+	var shadowComp io.WriteCloser
+	var shadowWriter io.Writer = a.wc.compTracker
+
+	if a.options.method != Store {
+		ci, _ := compressors.Load(a.options.method)
+		shadowComp, _ = ci.(Compressor)(shadowWriter)
+		shadowWriter = shadowComp
+	}
+
+	shadowTar := NewWriter(shadowWriter)
+	shadowHdr := &Header{
+		Name:     ".f4.arcidx",
+		Mode:     0644,
+		Size:     int64(len(idxData)),
+		Typeflag: TypeReg,
+	}
+	if err := shadowTar.WriteHeader(shadowHdr); err != nil {
+		return err
+	}
+	if _, err := shadowTar.Write(idxData); err != nil {
+		return err
+	}
+	// Writes TAR EOF for Stream 2
+	shadowTar.Close()
+
+	if shadowComp != nil {
+		shadowComp.Close()
+	}
+
+	shadowSize := a.wc.compTracker.pos - shadowStartOffset
+
+	// Begin Stream 3: The Magic Footer
+	err = writeMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)
+	if err != nil {
+		return err
+	}
+
+	return a.wc.f.Close()
 }
 
 // Archive writes files to the tar sequentially.

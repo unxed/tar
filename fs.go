@@ -17,12 +17,13 @@ import (
 )
 
 type TarFS struct {
-	ArchivePath string
-	IndexPath   string
-	Index       *Index
-	method      uint16
-	xzBlocks    []BlockOffset
-	closer      io.Closer
+	ArchivePath      string
+	IndexPath        string
+	Index            *Index
+	method           uint16
+	xzBlocks         []BlockOffset
+	closer           io.Closer
+	isTemporaryIndex bool
 }
 
 // NewFS opens a tar archive as a standard Go fs.FS (File System).
@@ -37,12 +38,6 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		}
 	}
 
-	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
-		if err := IndexArchive(archivePath, indexPath); err != nil {
-			return nil, err
-		}
-	}
-
 	ra, size, closer, err := openMultiVolume(archivePath)
 	if err != nil {
 		return nil, err
@@ -52,6 +47,24 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 	if err != nil {
 		closer.Close()
 		return nil, err
+	}
+
+	// Try to find embedded F4 Shadow Index
+	isTemporaryIndex := false
+	if _, errStat := os.Stat(indexPath); os.IsNotExist(errStat) {
+		shadowPayload, errShadow := extractShadowIndex(ra, size, method)
+		if errShadow == nil && len(shadowPayload) > 0 {
+			// Write embedded SQLite index to disk temporarily (SQLite requires a physical file)
+			if errWrite := os.WriteFile(indexPath, shadowPayload, 0600); errWrite == nil {
+				isTemporaryIndex = true
+			}
+		} else {
+			// No embedded index found, build it on-the-fly
+			if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
+				closer.Close()
+				return nil, errIdx
+			}
+		}
 	}
 
 	idx, err := OpenIndex(indexPath)
@@ -69,9 +82,10 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		ArchivePath: archivePath,
 		IndexPath:   indexPath,
 		Index:       idx,
-		method:      method,
-		xzBlocks:    xzBlocks,
-		closer:      closer,
+		method:           method,
+		xzBlocks:         xzBlocks,
+		closer:           closer,
+		isTemporaryIndex: isTemporaryIndex,
 	}, nil
 }
 // GetStandardIndexPath attempts to place the SQLite index next to the archive (sidecar).
@@ -214,6 +228,11 @@ func (t *TarFS) Close() error {
 	if t.closer != nil {
 		err2 = t.closer.Close()
 	}
+
+	if t.isTemporaryIndex {
+		os.Remove(t.IndexPath)
+	}
+
 	if err1 != nil {
 		return err1
 	}
