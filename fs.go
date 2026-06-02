@@ -99,12 +99,22 @@ func GetStandardIndexPath(archivePath string) (string, error) {
 	// Try sidecar file first (ratarmount default behavior)
 	sidecarPath := absPath + ".index.sqlite"
 
-	// Test if we can write to the sidecar location
-	f, err := os.OpenFile(sidecarPath, os.O_CREATE|os.O_RDWR, 0644)
-	if err == nil {
-		f.Close()
-		os.Remove(sidecarPath) // Удаляем тестовый файл, чтобы не блокировать проверку IsNotExist в NewFS
-		return sidecarPath, nil
+	// Проверяем права на запись в директорию рядом с архивом
+	if _, errStat := os.Stat(sidecarPath); errStat == nil {
+		// Файл уже существует. Проверяем, можем ли мы открыть его на чтение/запись
+		f, err := os.OpenFile(sidecarPath, os.O_RDWR, 0644)
+		if err == nil {
+			f.Close()
+			return sidecarPath, nil
+		}
+	} else {
+		// Файла нет. Проверяем возможность создания, но обязательно удаляем за собой
+		f, err := os.OpenFile(sidecarPath, os.O_CREATE|os.O_RDWR, 0644)
+		if err == nil {
+			f.Close()
+			os.Remove(sidecarPath) // Безопасно удаляем, так как мы только что его создали для теста
+			return sidecarPath, nil
+		}
 	}
 
 	// Fallback to cache directory if archive directory is read-only
