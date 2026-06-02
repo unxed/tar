@@ -140,6 +140,15 @@ type GzipIndexImporter interface {
 Once registered via `RegisterDecompressor()`, `TarFS` will automatically detect them and use their $O(1)$ fast paths during file reads.
 
 
+## Format Extensions
+
+This library extends the standard TAR format by codifying advanced cross-platform metadata support and random-access indexing into the **f4 tar extensions**. These extensions provide high-fidelity storage for Windows ACLs, POSIX Xattrs, and $O(1)$ random-access indexes while remaining 100% compliant with standard TAR utilities.
+
+See the technical specification in [f4tar.md](./f4tar.md).
+
+### Why "f4"?
+
+The name comes from the [f4 file manager](https://github.com/unxed/far2l), a cross-platform asynchronous clone of Far Manager. This library was built to provide f4 with high-fidelity archive support, ensuring that system-specific metadata like Windows Security Descriptors (ACLs) and Linux Extended Attributes (Xattrs) are preserved seamlessly when moving data across OS boundaries.
 ## License
 
 This project is released under the **BSD-3-Clause License**. See the `LICENSE` file for details.
