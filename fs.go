@@ -103,6 +103,7 @@ func GetStandardIndexPath(archivePath string) (string, error) {
 	f, err := os.OpenFile(sidecarPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err == nil {
 		f.Close()
+		os.Remove(sidecarPath) // Удаляем тестовый файл, чтобы не блокировать проверку IsNotExist в NewFS
 		return sidecarPath, nil
 	}
 
