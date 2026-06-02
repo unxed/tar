@@ -107,6 +107,53 @@ func TestTarFS_DefaultCache(t *testing.T) {
 		t.Errorf("Standard index file not created at %s", tfs.IndexPath)
 	}
 }
+
+func TestTarFS_Reopen(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "reopen_test.tar")
+
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := NewWriter(f)
+	tw.WriteHeader(&Header{Name: "test.txt", Size: 4, Mode: 0644})
+	tw.Write([]byte("data"))
+	tw.Close()
+	f.Close()
+
+	// 1. Первый запуск: база создается на лету, проверяем чтение
+	tfs1, err := NewFS(archivePath, "")
+	if err != nil {
+		t.Fatalf("First NewFS failed: %v", err)
+	}
+
+	b1, err := fs.ReadFile(tfs1, "test.txt")
+	if err != nil || string(b1) != "data" {
+		tfs1.Close()
+		t.Fatalf("First read failed: %v, got %q", err, string(b1))
+	}
+	indexPath := tfs1.IndexPath
+	tfs1.Close()
+
+	// Проверяем, что индексный файл остался на диске
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		t.Fatalf("Index file disappeared after Close()")
+	}
+
+	// 2. Второй запуск: должен подцепиться существующий индекс без его удаления/затирания
+	tfs2, err := NewFS(archivePath, "")
+	if err != nil {
+		t.Fatalf("Second NewFS failed: %v", err)
+	}
+	defer tfs2.Close()
+	defer os.Remove(tfs2.IndexPath)
+
+	b2, err := fs.ReadFile(tfs2, "test.txt")
+	if err != nil || string(b2) != "data" {
+		t.Errorf("Second read failed (index might have been destroyed or skipped): %v, got %q", err, string(b2))
+	}
+}
 func TestGetStandardIndexPath_SidecarAndFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 
