@@ -1,3 +1,4 @@
+//go:build !freebsd && !openbsd && !netbsd && !dragonfly && !solaris && !illumos
 package arcidx_bench
 
 import (

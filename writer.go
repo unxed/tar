@@ -32,9 +32,7 @@ func WithWriterIndex(indexPath string) WriterOption {
 		idx, err := OpenIndex(indexPath)
 		if err == nil {
 			wc.idx = idx
-			// Write ratarmount metadata
-			wc.idx.db.Exec(`INSERT INTO versions (name, version, major, minor, patch) VALUES ('ratarmount', '1.3.0', 1, 3, 0)`)
-			wc.idx.db.Exec(`INSERT INTO versions (name, version, major, minor, patch) VALUES ('index', '0.7.0', 0, 7, 0)`)
+			wc.idx.InitMetadata()
 		}
 	}
 }
