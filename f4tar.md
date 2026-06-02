@@ -71,3 +71,19 @@ For `.tar.gz` files, a standard empty GZIP stream containing a custom `FEXTRA` s
 
 ## 4. Implementation Guidelines
 - **Modifications/Updates:** If a standard archiver appends files to the archive (using `tar -r`), it will find the first EOF zeros (end of Stream 1), overwrite them, and write new files. This inherently **destroys/overwrites** the index, preventing state desynchronization. F4-aware readers MUST check if the physical file size exceeds the expected offsets in the footer, treating the index as stale if they do.
+
+---
+
+## 5. Comparison to Pixz (TPXZ)
+
+While `pixz` (parallel indexed XZ) pioneered the concept of embedding indexes after the TAR EOF marker, its architecture is tightly coupled to the block-based design of the XZ container format.
+
+### 5.1. The Block-Level Decoding Limitation
+`pixz` compresses its index as a custom LZMA2 block and appends it before the XZ Index. Reading this requires utilizing the low-level `lzma_block_decoder` API of `liblzma`.
+In pure-Go environments (like the standard `ulikunitz/xz` library), block-level decoding APIs are typically not exposed. A pure Go reader would either have to fall back to CGO or decompress the entire archive sequentially to read the trailing block, negating the $O(1)$ random-access property.
+
+### 5.2. Why F4SS is Superior for Pure-Go Ecosystems
+By utilizing **concatenated compression streams**, F4SS bypasses container-specific block limitations:
+1. **Container Agnostic:** F4SS works seamlessly with GZIP, ZSTD, BZIP2, and uncompressed TAR files.
+2. **Pure Go Friendly:** High-level Go decompressors (such as `gzip.NewReader` or `zstd.NewReader`) can natively decode the concatenated index stream (Stream 2) as an independent entity when pointed to by a simple `io.SectionReader`. No custom block parsers or CGO dependencies are required.
+3. **$O(1)$ Lookup Efficiency:** Instead of parsing a potentially massive global index to find the last block, F4SS reads a small, fixed-size footer at the absolute physical end of the file in exactly one seek operation.
