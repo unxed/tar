@@ -1,4 +1,4 @@
-# f4 TAR Extensions Specification (Version 0.3)
+# f4 TAR Extensions Specification (Version 0.4)
 
 ## 1. Abstract
 The **f4 TAR Extensions** provide a set of standardized PAX headers, methodologies, and an embedded indexing format (F4SS) designed to enhance cross-platform file system fidelity and performance within standard TAR archives. These extensions were originally developed for the `unxed/tar` golang library used in the [f4](https://github.com/unxed/f4) — a cross-platform, asynchronous Far Manager clone. All extensions are strictly backward-compatible with standard TAR utilities.
@@ -36,7 +36,7 @@ The first stream is a standard, fully valid compressed or uncompressed TAR archi
 #### 4.1.2. Stream 2 (The Shadow Index)
 The second stream is an independent, concatenated compressed (or uncompressed) TAR archive containing exactly one file: `.f4.arcidx`.
 - Filename: `.f4.arcidx` (uncompressed, regular file).
-- Payload: A `ratarmount`-compatible SQLite database containing the pre-calculated offsets and metadata of all entries in Stream 1.
+- Payload: A `ratarmount`-compatible SQLite database (to be replaced by another, more compact format in near future, see https://github.com/mxmlnkn/ratarmount/issues/192) containing the pre-calculated offsets and metadata of all entries in Stream 1.
 - It also ends with two 512-byte zero blocks.
 
 #### 4.1.3. Stream 3 (The Magic Footer)
