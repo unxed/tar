@@ -1,4 +1,4 @@
-# f4 TAR Extensions Specification (Version 0.7)
+# f4 TAR Extensions Specification (Version 0.8)
 
 ## 1. Abstract
 The **f4 TAR Extensions** provide a set of standardized PAX headers, methodologies, and an embedded metadata and indexing format (F4SS) designed to enhance cross-platform file system fidelity and performance within standard TAR archives. These extensions were originally developed for the `unxed/tar` golang library used in [f4](https://github.com/unxed/f4) — a cross-platform, asynchronous Far Manager clone. All extensions are backward-compatible with standard TAR utilities.
@@ -43,6 +43,7 @@ The F4SS profile organizes the archive into three consecutive streams:
 #### 4.1.1. Stream 1 (Original TAR Data)
 The first stream is a standard, fully valid compressed or uncompressed TAR archive.
 - It contains all the archived directories, files, links, and metadata.
+- **For GZIP archives utilizing chunked compression, this stream MAY include the standard `dictzip` chunk index natively within the GZIP `FEXTRA` header (Subfield ID 'RA') to guarantee out-of-the-box compatibility with native dictzip utilities.**
 - It ends with two 512-byte zero blocks.
 - **Behavior:** Standard utilities decode this stream, hit the zero blocks (EOF), and stop processing.
 
@@ -58,8 +59,8 @@ F4SS structures metadata inside Stream 2 under a unified taxonomy representing i
     *   **Description:** The filesystem metadata index mapping logical file paths to their uncompressed offsets. `index.sqlite` uses the classic SQLite schema, while `index.arcidx` uses the lightweight FlatBuffers schema (as standardized in [ratarmount#192](https://github.com/mxmlnkn/ratarmount/issues/192)).
 *   **`.tarext/GZIDX/index.gzidx`**
     *   **Description:** A raw binary `GZIDX` index for stateful random access inside continuous GZIP streams (spec defined in Section 4.3.1).
-*   **`.tarext/SOZip/index.soz`**
-    *   **Description:** A raw binary chunk offset index for stateless random access inside chunked (flushed) GZIP/ZSTD streams (spec defined in Section 4.3.2).
+*   **`.tarext/dictzip/index.dzidx`**
+    *   **Description:** A raw binary chunk size index for stateless random access inside chunked (flushed) streams for formats other than GZIP (such as ZSTD) where native headers cannot be used (spec defined in Section 4.3.2).
 
 ##### Extensibility and Custom Payloads:
 Third-party developers and archivers can define their own payloads by placing files inside `.tarext/`:
@@ -111,7 +112,7 @@ For `.tar.gz` files, a standard empty GZIP stream containing a custom `FEXTRA` s
 
 ### 4.3. Raw Compression Seek Indexes
 
-To decouple filesystem metadata from the underlying compression layer, F4SS standardizes raw binary index formats stored within dedicated directories in Stream 2. This allows low-level decompressors to perform $O(1)$ seeks without parsing SQLite or FlatBuffers schemas.
+To decouple filesystem metadata from the underlying compression layer, F4SS standardizes raw binary index formats stored within dedicated directories in Stream 2 or natively in Stream 1 headers.
 
 #### 4.3.1. Continuous GZIP Index (`.tarext/GZIDX/index.gzidx`)
 This format is binary-compatible with Mark Adler's `zran.c` and is used to index unmodified, continuously compressed GZIP streams. It stores periodic checkpoints containing the 32KB sliding window (dictionary) required to resume decompression at any arbitrary point.
@@ -138,49 +139,43 @@ Immediately following the Checkpoints list, there are $M$ raw 32KB buffers, wher
 
 ---
 
-#### 4.3.2. Chunked Seek Index (`.tarext/SOZip/index.soz`)
-This format is used for archives compressed in chunked mode (e.g., periodic `Z_FULL_FLUSH` at fixed uncompressed intervals like 1MB, or independent ZSTD frames). Because each chunk is independent, no sliding dictionary windows are required.
+#### 4.3.2. Chunked Dictzip Index for Custom Formats (`.tarext/dictzip/index.dzidx`)
+For formats other than GZIP (such as ZSTD) where native dictzip headers are impossible to implement, a compatible chunked seek index is stored in Stream 2. Since each chunk is independent, no sliding dictionary windows are required.
 
 ##### Header Layout (32 bytes, Little Endian):
-- `[0:7]` - `"F4CHNK\x00"` (7 bytes signature + null terminator)
-- `[7]` - `uint8` version (set to 1)
-- `[8:12]` - `uint32` chunk size (uncompressed interval, e.g., 1048576)
-- `[12:16]` - `uint32` offset size in bytes (set to 8)
+- `[0:5]` - `"DZIDX"` (5 bytes ASCII Signature)
+- `[5]` - `uint8` version (set to 1)
+- `[6:8]` - `uint16` entry size in bytes (typically `2` for 16-bit chunk sizes or `4` for 32-bit chunk sizes)
+- `[8:12]` - `uint32` chunk size (uncompressed interval, e.g., 65536)
+- `[12:16]` - `uint32` chunk count ($P$)
 - `[16:24]` - `uint64` total uncompressed stream size
 - `[24:32]` - `uint64` total compressed stream size
 
-##### Chunk Offsets ($P \times 8$ bytes, Little Endian):
-An array of $P$ `uint64` values, where $P = \lceil \text{TotalUncompressedSize} / \text{ChunkSize} \rceil - 1$.
-Each element represents the physical compressed offset of the chunk relative to the start of the compressed data. The first chunk (uncompressed offset 0) is implicitly at compressed offset 0 and is omitted from the array.
+##### Chunk Sizes ($P \times \text{entry\_size}$ bytes, Little Endian):
+An array of $P$ integers (each of size `entry_size` bytes), representing the compressed size of each chunk in bytes. The layout and logic mirror the classic `dictzip` structure to maintain conceptual parity.
 
 ---
 
 ### 4.4. Indexing Strategies (Continuous vs. Chunked)
 
-To support $O(1)$ random access within compressed streams (like GZIP or ZSTD), F4SS accommodates two primary strategies within its metadata payload:
+To support $O(1)$ random access within compressed streams, F4SS accommodates two primary strategies depending on the file container and the user's performance needs:
 
 1.  **Continuous / Stateful Indexing (e.g., GZIDX):** The archive is compressed normally to maximize the compression ratio. The index stores periodic checkpoints, which for algorithms like DEFLATE include the 32KB sliding window (dictionary) required to resume decompression at that point.
-2.  **Chunked / Flushed Indexing (dictzip / SOZip style):** The compressor periodically flushes its state (e.g., using `Z_FULL_FLUSH` in zlib) at fixed intervals. While this slightly reduces the overall compression ratio, it allows the index to be extremely lightweight—requiring only a list of `uint64` physical offsets without the overhead of storing dictionary windows—and makes seeking significantly faster.
+2.  **Chunked / Flushed Indexing (dictzip style):** The compressor periodically flushes its state (e.g., using `Z_FULL_FLUSH` in zlib, or using independent frame boundaries in ZSTD) at fixed uncompressed intervals. While this slightly reduces the overall compression ratio, it allows the index to be extremely lightweight and makes seeking significantly faster.
+    - **For GZIP streams:** The index MUST be stored natively in the GZIP header of Stream 1 using standard `dictzip` format.
+    - **For other streams (e.g. ZSTD):** The index MUST be stored as a `.tarext/dictzip/index.dzidx` payload in Stream 2.
 
 ### 4.5. Implementation Guidelines
 - **Modifications/Updates:** If a standard archiver appends files to the archive (using `tar -r`), it will find the first EOF zeros (end of Stream 1), overwrite them, and write new files. This inherently **destroys/overwrites** the index and metadata, preventing state desynchronization. F4-aware readers MUST check if the physical file size exceeds the expected offsets in the footer, treating the metadata stream as stale if they do.
 
 ### 4.6. Comparison to Prior Art
 
-#### 4.6.1. dictzip and SOZip
-`dictzip` pioneered random access for GZIP by forcing chunked compression and storing block sizes in the GZIP `FEXTRA` header. More recently, the **SOZip (Seek-Optimized ZIP)** specification applied this chunked technique to ZIP files.
-While F4SS strongly embraces both continuous and chunked compression methodologies for high-performance seeking, it decouples the index from the container's native headers (unlike `dictzip`) or hidden archive entries (unlike `SOZip`). Instead, F4SS consolidates all offsets inside the unified `.tarext/` metadata payload. This provides a single, scalable access point for all file boundaries and compression offsets, keeping the primary archive stream pristine.
+#### 4.6.1. dictzip Compatibility and Design
+`dictzip` pioneered random access for GZIP by forcing chunked compression and storing block sizes in the GZIP `FEXTRA` header. 
+
+F4SS adopts this exact methodology. For GZIP archives, F4SS avoids inventing custom extensions, instead prioritizing native compatibility with the existing `dictzip` ecosystem. If an archive is GZIP-compressed, the `dictzip` index is embedded natively within the GZIP headers of Stream 1. 
+
+For other formats (such as `.tar.zst`), where native `dictzip` headers are not supported by the container, F4SS replicates the `dictzip` block-size architecture within the `.tarext/dictzip/index.dzidx` file inside Stream 2. This unifies the seek mechanics across different compression formats while ensuring native utilities remain fully supported.
 
 #### 4.6.2. Pixz (TPXZ)
-While `pixz` (parallel indexed XZ) pioneered the concept of embedding indexes after the TAR EOF marker, its architecture is tightly coupled to the block-based design of the XZ container format.
-
-**The Block-Level Decoding Limitation:**
-`pixz` compresses its index as a custom LZMA2 block and appends it before the XZ Index. Reading this requires utilizing the low-level `lzma_block_decoder` API of `liblzma`.
-In pure-Go environments (like the standard `ulikunitz/xz` library), block-level decoding APIs are typically not exposed. A pure Go reader would either have to fall back to CGO or decompress the entire archive sequentially to read the trailing block, negating the $O(1)$ random-access property.
-
-#### 4.6.3. Why F4SS is Designed for Pure-Go Ecosystems
-By utilizing **concatenated compression streams**, F4SS bypasses container-specific block limitations found in tools like `pixz` and format-specific framing like `dictzip`:
-1. **Container Agnostic:** F4SS works with GZIP, ZSTD, BZIP2, and uncompressed TAR files.
-2. **Pure Go Friendly:** High-level Go decompressors (such as `gzip.NewReader` or `zstd.NewReader`) can natively decode the concatenated metadata stream (Stream 2) as an independent entity when pointed to by a simple `io.SectionReader`. No custom block parsers or CGO dependencies are required.
-3. **$O(1)$ Lookup Efficiency:** Instead of parsing a potentially massive global index to find the last block, F4SS reads a small, fixed-size footer at the absolute physical end of the file in exactly one seek operation.
-4. **Standardized Extensibility:** By leveraging a nested TAR archive inside Stream 2, any standard TAR library can be used to read, write, or list additional metadata payloads without requiring custom TLV parsers or proprietary container structures.
+While `pixz` (parallel indexed XZ) pioneered the concept of embedding indexes for chunked compression after the TAR EOF marker, its architecture is tightly coupled to the block-based design of the XZ container format and can not be used for example with zStd.
