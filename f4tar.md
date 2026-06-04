@@ -28,16 +28,16 @@ A standard TAR archive consists of a series of file records, ending with an end-
 The F4SS profile organizes the archive into three consecutive streams:
 
 ```
-+-----------------------------------------------------------+
-| Stream 1: Original TAR Data                               |
-| (Files, directories, symlinks, ending with 2x512 zero blk)|
-+-----------------------------------------------------------+
-| Stream 2: Metadata & Payload Stream (TAR)                 |
-| (Contains .f4/ directory with indexes and custom payloads)|
-+-----------------------------------------------------------+
-| Stream 3: Magic Footer                                    |
-| (Fixed-size block pointing to Stream 2 offset and size)   |
-+-----------------------------------------------------------+
++----------------------------------------------------------------+
+| Stream 1: Original TAR Data                                    |
+| (Files, directories, symlinks, ending with 2x512 zero blk)     |
++----------------------------------------------------------------+
+| Stream 2: Metadata & Payload Stream (TAR)                      |
+| (Contains .tarext/ directory with indexes and custom payloads) |
++----------------------------------------------------------------+
+| Stream 3: Magic Footer                                         |
+| (Fixed-size block pointing to Stream 2 offset and size)        |
++----------------------------------------------------------------+
 ```
 
 #### 4.1.1. Stream 1 (Original TAR Data)
@@ -49,15 +49,15 @@ The first stream is a standard, fully valid compressed or uncompressed TAR archi
 #### 4.1.2. Stream 2 (The Metadata and Payload Stream)
 The second stream is an independent, concatenated compressed (or uncompressed) TAR archive. It serves as an extensible metadata container, conceptually similar to ZIP extra fields, but without the 64 KB size limitation.
 
-To avoid namespace collisions, all metadata files and payloads inside Stream 2 MUST be placed within a reserved root-level directory named `.f4/`.
+To avoid namespace collisions, all metadata files and payloads inside Stream 2 MUST be placed within a reserved root-level directory named `.tarext/`.
 
 ##### Standard Payloads:
-*   **.f4/index.db**
-    *   **Description:** A `ratarmount`-compatible SQLite database containing the pre-calculated offsets and metadata of all entries in Stream 1. (To be replaced or augmented by a more compact format in the future, see https://github.com/mxmlnkn/ratarmount/issues/192).
+*   **.tarext/ratarmount/index.sqlite**
+    *   **Description:** A `ratarmount`-compatible SQLite database containing the pre-calculated offsets and metadata of all entries in Stream 1. (To be replaced by a more compact format in the future, see https://github.com/mxmlnkn/ratarmount/issues/192).
 
 ##### Extensibility and Custom Payloads:
-Third-party developers and archivers can define their own payloads by placing files inside the `.f4/ext/` namespace:
-*   **Path Scheme:** `.f4/ext/<vendor_or_project>/<payload_name>`
+Third-party developers and archivers can define their own payloads by placing files inside the `.tarext/`:
+*   **Path Scheme:** `.tarext/<vendor_or_project>/<payload_name>`
 
 Because Stream 2 is itself a standard TAR archive, individual payloads can range from small text configurations to gigabytes of auxiliary binary data, limited only by the underlying TAR specification.
 
