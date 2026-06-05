@@ -79,10 +79,10 @@ func writeMagicFooter(w io.Writer, method uint16, shadowStart, shadowSize int64)
 	return err
 }
 
-// extractShadowIndex looks for the F4IDX magic footer and, if found, extracts and returns the SQLite database payload.
-func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, error) {
+// LocateShadowStream finds the F4SS Magic Footer and returns the physical offset and size of Stream 2.
+func LocateShadowStream(ra io.ReaderAt, fileSize int64, method uint16) (int64, int64, error) {
 	if fileSize < 53 {
-		return nil, nil // Too small to contain any valid archive with a shadow footer
+		return 0, 0, nil // Too small
 	}
 
 	var footerSize int64
@@ -94,12 +94,12 @@ func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, 
 	case GZIP:
 		footerSize = 53
 	default:
-		return nil, nil
+		return 0, 0, nil
 	}
 
 	buf := make([]byte, footerSize)
 	if _, err := ra.ReadAt(buf, fileSize-footerSize); err != nil {
-		return nil, nil
+		return 0, 0, nil
 	}
 
 	var shadowStart, shadowSize uint64
@@ -107,33 +107,42 @@ func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, 
 	switch method {
 	case Store:
 		if string(buf[16:24]) != string(magicF4IDX) {
-			return nil, nil
+			return 0, 0, nil
 		}
 		shadowStart = binary.LittleEndian.Uint64(buf[0:8])
 		shadowSize = binary.LittleEndian.Uint64(buf[8:16])
 	case ZSTD:
 		if string(buf[24:32]) != string(magicF4IDX) {
-			return nil, nil
+			return 0, 0, nil
 		}
 		shadowStart = binary.LittleEndian.Uint64(buf[8:16])
 		shadowSize = binary.LittleEndian.Uint64(buf[16:24])
 	case GZIP:
 		if string(buf[32:40]) != string(magicF4IDX) {
-			return nil, nil
+			return 0, 0, nil
 		}
-		// Extra payload is at offset 16 within the 53-byte footer
 		shadowStart = binary.LittleEndian.Uint64(buf[16:24])
 		shadowSize = binary.LittleEndian.Uint64(buf[24:32])
 	default:
-		return nil, nil
+		return 0, 0, nil
 	}
 
 	if shadowStart == 0 || shadowSize == 0 || int64(shadowStart+shadowSize) > fileSize-footerSize {
-		return nil, io.ErrUnexpectedEOF // Corrupted footer
+		return 0, 0, io.ErrUnexpectedEOF // Corrupted footer
+	}
+
+	return int64(shadowStart), int64(shadowSize), nil
+}
+
+// extractShadowIndex looks for the F4IDX magic footer and, if found, extracts and returns the SQLite database payload.
+func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, error) {
+	shadowStart, shadowSize, err := LocateShadowStream(ra, fileSize, method)
+	if err != nil || shadowSize == 0 {
+		return nil, err
 	}
 
 	// Read the shadow stream
-	sr := io.NewSectionReader(ra, int64(shadowStart), int64(shadowSize))
+	sr := io.NewSectionReader(ra, shadowStart, shadowSize)
 	var rd io.Reader = sr
 
 	if method != Store {
@@ -151,19 +160,29 @@ func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, 
 
 	// Parse the embedded TAR (Stream 2)
 	tr := NewReader(rd)
-	hdr, err := tr.Next()
-	if err != nil {
-		return nil, err
+	var payload []byte
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		// Support only the standard F4SS path
+		if hdr.Name == ".tarext/ratarmount/index.sqlite" {
+			payload, err = io.ReadAll(tr)
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 
-	if hdr.Name != ".f4.arcidx" {
+	if payload == nil {
 		return nil, io.ErrUnexpectedEOF
-	}
-
-	// Extract SQLite database payload to memory
-	payload, err := io.ReadAll(tr)
-	if err != nil {
-		return nil, err
 	}
 
 	return payload, nil

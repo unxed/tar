@@ -34,9 +34,17 @@ type extractorOptions struct {
 	numericOwner          bool
 	keepBroken            bool
 	tolerant              bool
+	password              string
 }
 
 // WithExtractorSafeWrites extracts files atomically by writing to a temporary file and renaming (--safe-writes).
+// WithExtractorPassword provides the password for decrypting F4Crypt encrypted archives.
+func WithExtractorPassword(p string) ExtractorOption {
+	return func(o *extractorOptions) error {
+		o.password = p
+		return nil
+	}
+}
 func WithExtractorSafeWrites(b bool) ExtractorOption {
 	return func(o *extractorOptions) error {
 		o.safeWrites = b
@@ -248,18 +256,12 @@ type Extractor struct {
 }
 
 func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor, error) {
-	rc, err := OpenReader(filename)
-	if err != nil {
-		return nil, err
-	}
-
+	var err error
 	if chroot, err = filepath.Abs(chroot); err != nil {
-		rc.Close()
 		return nil, err
 	}
 
 	e := &Extractor{
-		rc:     rc,
 		chroot: chroot,
 		options: extractorOptions{
 			concurrency:           runtime.GOMAXPROCS(0),
@@ -276,6 +278,12 @@ func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor,
 	for _, o := range opts {
 		o(&e.options)
 	}
+
+	rc, err := openReaderWithPassword(filename, e.options.password)
+	if err != nil {
+		return nil, err
+	}
+	e.rc = rc
 
 	return e, nil
 }

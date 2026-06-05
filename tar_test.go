@@ -251,14 +251,14 @@ func TestEmbeddedIndexExternalCompatibility(t *testing.T) {
 		}
 
 		// Verify hidden index file is NOT extracted unless we used ignoreZeros
-		hiddenFile := filepath.Join(dstDir, ".f4.arcidx")
+		hiddenFile := filepath.Join(dstDir, ".tarext", "ratarmount", "index.sqlite")
 		if ignoreZeros {
 			if _, err := os.Stat(hiddenFile); os.IsNotExist(err) {
-				t.Errorf("Expected hidden index .f4.arcidx to be extracted with -i flag")
+				t.Errorf("Expected hidden index %s to be extracted with -i flag", hiddenFile)
 			}
 		} else {
 			if _, err := os.Stat(hiddenFile); err == nil {
-				t.Errorf("Hidden index .f4.arcidx was erroneously extracted without -i flag!")
+				t.Errorf("Hidden index %s was erroneously extracted without -i flag!", hiddenFile)
 			}
 		}
 	}

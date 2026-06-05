@@ -24,12 +24,30 @@ type TarFS struct {
 	xzBlocks         []BlockOffset
 	closer           io.Closer
 	isTemporaryIndex bool
+	password         string
 }
 
+type FSOption func(*fsOptions)
+
+type fsOptions struct {
+	password string
+}
+
+// WithFSPassword provides the password for decrypting F4Crypt encrypted archives in TarFS.
+func WithFSPassword(p string) FSOption {
+	return func(o *fsOptions) {
+		o.password = p
+	}
+}
 // NewFS opens a tar archive as a standard Go fs.FS (File System).
 // This enables integration with http.FileServer, fs.WalkDir, etc.
 // If the SQLite index does not exist, it will be generated automatically.
-func NewFS(archivePath, indexPath string) (*TarFS, error) {
+func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
+	var options fsOptions
+	for _, o := range opts {
+		o(&options)
+	}
+
 	if indexPath == "" {
 		var err error
 		indexPath, err = GetStandardIndexPath(archivePath)
@@ -40,6 +58,12 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 
 	ra, size, closer, err := openMultiVolume(archivePath)
 	if err != nil {
+		return nil, err
+	}
+
+	ra, size, err = checkF4Crypt(ra, size, options.password)
+	if err != nil {
+		closer.Close()
 		return nil, err
 	}
 
@@ -86,6 +110,7 @@ func NewFS(archivePath, indexPath string) (*TarFS, error) {
 		xzBlocks:         xzBlocks,
 		closer:           closer,
 		isTemporaryIndex: isTemporaryIndex,
+		password:         options.password,
 	}, nil
 }
 // GetStandardIndexPath attempts to place the SQLite index next to the archive (sidecar).
@@ -270,6 +295,12 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 
 	ra, size, closer, err := openMultiVolume(t.ArchivePath)
 	if err != nil {
+		return nil, err
+	}
+
+	ra, size, err = checkF4Crypt(ra, size, t.password)
+	if err != nil {
+		closer.Close()
 		return nil, err
 	}
 

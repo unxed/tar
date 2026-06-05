@@ -14,18 +14,28 @@ type ReadCloser struct {
 
 // OpenReader opens a TAR or compressed TAR file (.tar, .tar.gz, .tar.zst, etc.).
 func OpenReader(name string) (*ReadCloser, error) {
+	return openReaderWithPassword(name, "")
+}
+
+func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 	ra, size, closer, err := openMultiVolume(name)
 	if err != nil {
 		return nil, err
 	}
 
-	method, err := DetectFormat(ra)
+	raDec, sizeDec, err := checkF4Crypt(ra, size, password)
 	if err != nil {
 		closer.Close()
 		return nil, err
 	}
 
-	var rd io.Reader = io.NewSectionReader(ra, 0, size)
+	method, err := DetectFormat(raDec)
+	if err != nil {
+		closer.Close()
+		return nil, err
+	}
+
+	var rd io.Reader = io.NewSectionReader(raDec, 0, sizeDec)
 	var dcomp io.ReadCloser
 
 	if method != Store {

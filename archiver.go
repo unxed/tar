@@ -20,9 +20,17 @@ type archiverOptions struct {
 	indexPath   string
 	xattrs      bool
 	embeddedIdx bool
+	password    string
 }
 
 // WithArchiverEmbeddedIndex appends the index directly inside the archive (F4 Shadow Stream).
+// WithArchiverPassword enables F4Crypt AES-256-CTR encryption for the archive.
+func WithArchiverPassword(p string) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.password = p
+		return nil
+	}
+}
 func WithArchiverEmbeddedIndex(b bool) ArchiverOption {
 	return func(o *archiverOptions) error {
 		o.embeddedIdx = b
@@ -52,10 +60,13 @@ func WithArchiverIndex(path string) ArchiverOption {
 }
 
 type Archiver struct {
-	wc            *WriteCloser
-	options       archiverOptions
-	m             sync.Mutex
-	seenHardLinks map[hardlinkKey]string
+	wc                   *WriteCloser
+	options              archiverOptions
+	m                    sync.Mutex
+	seenHardLinks        map[hardlinkKey]string
+	finalFilename        string
+	tempFilename         string
+	isTemporaryIndexPath bool
 }
 
 func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archiver, error) {
@@ -66,11 +77,13 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 
 	a := &Archiver{
 		options: archiverOptions{
-			method: GZIP,
-			chroot: chroot,
-			xattrs: true,
+			method:      GZIP,
+			chroot:      chroot,
+			xattrs:      true,
+			embeddedIdx: true, // Embedded index (F4SS) is enabled by default
 		},
 		seenHardLinks: make(map[hardlinkKey]string),
+		finalFilename: filename,
 	}
 
 	for _, o := range opts {
@@ -79,26 +92,52 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 		}
 	}
 
+	// If embedded index is enabled but no custom path was provided, generate a temporary SQLite file
+	if a.options.embeddedIdx && a.options.indexPath == "" {
+		tf, err := os.CreateTemp("", "f4tar-index-*.sqlite")
+		if err != nil {
+			return nil, err
+		}
+		tf.Close()
+		a.options.indexPath = tf.Name()
+		a.isTemporaryIndexPath = true
+	}
+
+	targetFile := filename
+	if a.options.password != "" {
+		tf, err := os.CreateTemp(filepath.Dir(filename), "f4crypt-*.tar")
+		if err != nil {
+			if a.isTemporaryIndexPath {
+				os.Remove(a.options.indexPath)
+			}
+			return nil, err
+		}
+		targetFile = tf.Name()
+		tf.Close()
+		a.tempFilename = targetFile
+	}
+
 	var wopts []WriterOption
 	if a.options.indexPath != "" {
 		wopts = append(wopts, WithWriterIndex(a.options.indexPath))
 	}
 
-	wc, err := CreateWriter(filename, a.options.method, wopts...)
+	wc, err := CreateWriter(targetFile, a.options.method, wopts...)
 	if err != nil {
+		if a.tempFilename != "" {
+			os.Remove(a.tempFilename)
+		}
 		return nil, err
 	}
 	a.wc = wc
 	return a, nil
 }
 
-func (a *Archiver) Close() error {
+func (a *Archiver) closeInternal() error {
 	if !a.options.embeddedIdx || a.options.indexPath == "" {
 		return a.wc.Close()
 	}
 
-	// We are building an embedded index. We need to close the current TAR stream
-	// (which writes the EOF zeros), flush the compressor, and start the shadow stream.
 	if err := a.wc.Writer.Close(); err != nil {
 		return err
 	}
@@ -107,7 +146,6 @@ func (a *Archiver) Close() error {
 	if idx != nil {
 		if len(a.wc.batch) > 0 {
 			idx.Insert(a.wc.batch)
-			a.wc.batch = a.wc.batch[:0]
 		}
 		if a.wc.method == ZSTD && len(a.wc.zstdBlocks) > 0 {
 			idx.InsertBlockOffsets("zstdblocks", a.wc.zstdBlocks)
@@ -125,26 +163,28 @@ func (a *Archiver) Close() error {
 		}
 	}
 
-	// Close the main compression stream to ensure independent boundaries
 	if a.wc.comp != nil {
 		a.wc.comp.Close()
 	}
+
+	idx.Close()
 
 	// Read the generated SQLite index into memory
 	idxData, err := os.ReadFile(a.options.indexPath)
 	if err != nil {
 		a.wc.f.Close()
+		if a.isTemporaryIndexPath {
+			os.Remove(a.options.indexPath)
+		}
 		return err
 	}
 
-	// Close the SQLite handle and remove the temporary file since we embed it
-	idx.Close()
-	os.Remove(a.options.indexPath)
+	if a.isTemporaryIndexPath {
+		os.Remove(a.options.indexPath)
+	}
 
-	// Begin Stream 2: The Shadow Stream
 	shadowStartOffset := a.wc.compTracker.pos
 
-	// Restart compressor for Stream 2
 	var shadowComp io.WriteCloser
 	var shadowWriter io.Writer = a.wc.compTracker
 
@@ -155,8 +195,11 @@ func (a *Archiver) Close() error {
 	}
 
 	shadowTar := NewWriter(shadowWriter)
+	shadowTar.WriteHeader(&Header{Name: ".tarext/", Mode: 0755, Typeflag: TypeDir})
+	shadowTar.WriteHeader(&Header{Name: ".tarext/ratarmount/", Mode: 0755, Typeflag: TypeDir})
+
 	shadowHdr := &Header{
-		Name:     ".f4.arcidx",
+		Name:     ".tarext/ratarmount/index.sqlite",
 		Mode:     0644,
 		Size:     int64(len(idxData)),
 		Typeflag: TypeReg,
@@ -167,7 +210,6 @@ func (a *Archiver) Close() error {
 	if _, err := shadowTar.Write(idxData); err != nil {
 		return err
 	}
-	// Writes TAR EOF for Stream 2
 	shadowTar.Close()
 
 	if shadowComp != nil {
@@ -175,14 +217,24 @@ func (a *Archiver) Close() error {
 	}
 
 	shadowSize := a.wc.compTracker.pos - shadowStartOffset
-
-	// Begin Stream 3: The Magic Footer
 	err = writeMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)
 	if err != nil {
 		return err
 	}
 
 	return a.wc.f.Close()
+}
+
+func (a *Archiver) Close() error {
+	err := a.closeInternal()
+	if a.options.password != "" {
+		encErr := encapsulateF4Crypt(a.finalFilename, a.tempFilename, a.options.password)
+		os.Remove(a.tempFilename)
+		if err == nil {
+			err = encErr
+		}
+	}
+	return err
 }
 
 // Archive writes files to the tar sequentially.
