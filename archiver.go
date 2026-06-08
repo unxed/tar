@@ -22,6 +22,15 @@ type archiverOptions struct {
 	embeddedIdx bool
 	password    string
 	recoveryPct int
+	splitSize   int64
+}
+
+// WithArchiverSplitSize enables creation of multi-volume archives
+func WithArchiverSplitSize(size int64) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.splitSize = size
+		return nil
+	}
 }
 
 // WithArchiverEmbeddedIndex appends the index directly inside the archive (F4 Shadow Stream).
@@ -128,6 +137,9 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 	var wopts []WriterOption
 	if a.options.indexPath != "" {
 		wopts = append(wopts, WithWriterIndex(a.options.indexPath))
+	}
+	if a.options.splitSize > 0 {
+		wopts = append(wopts, WithWriterSplitSize(a.options.splitSize))
 	}
 
 	wc, err := CreateWriter(targetFile, a.options.method, wopts...)

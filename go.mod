@@ -5,7 +5,7 @@ go 1.25.5
 require (
 	github.com/klauspost/compress v1.18.7-0.20260521203646-ecdb779d8745
 	github.com/ulikunitz/xz v0.5.11
-	github.com/unxed/par2 v0.1.0
+	github.com/unxed/par2 v0.1.1
 	golang.org/x/sync v0.7.0
 	golang.org/x/sys v0.19.0
 	modernc.org/sqlite v1.29.5

@@ -20,8 +20,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/ulikunitz/xz v0.5.11 h1:kpFauv27b6ynzBNT/Xy+1k+fK4WswhN/6PN5WhFAGw8=
 github.com/ulikunitz/xz v0.5.11/go.mod h1:nbz6k7qbPmH4IRqmfOplQw/tblSgqTqBwxkY0oWt/14=
-github.com/unxed/par2 v0.1.0 h1:BLczcrBUDr0gAs5FNFVN8U0g/M5ZZ77HRgjZlYIaBpU=
-github.com/unxed/par2 v0.1.0/go.mod h1:qJE5Y1YSm0eweWwxdutyC7yVXxr9tC8iq66JLMHl6dU=
+github.com/unxed/par2 v0.1.1 h1:4O6XpH5ZH7oBXzBt/wY1bnDlFtMMht3AOpeGxi7J0NA=
+github.com/unxed/par2 v0.1.1/go.mod h1:qJE5Y1YSm0eweWwxdutyC7yVXxr9tC8iq66JLMHl6dU=
 golang.org/x/mod v0.14.0 h1:dGoOF9QVLYng8IHTm7BAyWqCqSheQ5pYWGhzW00YJr0=
 golang.org/x/mod v0.14.0/go.mod h1:hTbmBsO62+eylJbnUtE2MGJUyE7QWk4xUqPFrRgJ+7c=
 golang.org/x/sync v0.7.0 h1:YsImfSBoP9QPYL0xyKJPq0gcaJdG3rInoqxTWbfQu9M=

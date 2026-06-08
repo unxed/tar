@@ -11,9 +11,9 @@ import (
 )
 
 func IndexArchive(archivePath, indexPath string) error {
-	ra, size, closer, err := openMultiVolume(archivePath)
+	ra, size, err := OpenMultiVolume(archivePath, os.O_RDONLY)
 	if err != nil { return err }
-	defer closer.Close()
+	defer ra.Close()
 	method, err := DetectFormat(ra)
 	if err != nil { return err }
 	var rd io.Reader = io.NewSectionReader(ra, 0, size)

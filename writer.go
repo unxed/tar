@@ -8,7 +8,7 @@ import (
 
 type WriteCloser struct {
 	*tar.Writer
-	f             *os.File
+	f             io.WriteCloser
 	comp          io.WriteCloser
 	method        uint16
 	idx           *Index
@@ -19,26 +19,44 @@ type WriteCloser struct {
 	seenParents   map[string]bool
 	gzPoints      []gzPoint
 	zstdBlocks    []BlockOffset
+	splitSize     int64
 }
 
 // CreateWriter creates a new TAR or compressed TAR file.
 // Method should be one of Store, GZIP, BZIP2, XZ, ZSTD.
-type WriterOption func(*WriteCloser)
+type writerOptions struct {
+	indexPath string
+	splitSize int64
+}
+
+type WriterOption func(*writerOptions)
 
 // WithWriterIndex enables on-the-fly indexing during archive creation.
 func WithWriterIndex(indexPath string) WriterOption {
-	return func(wc *WriteCloser) {
-		os.Remove(indexPath)
-		idx, err := OpenIndex(indexPath)
-		if err == nil {
-			wc.idx = idx
-			wc.idx.InitMetadata()
-		}
+	return func(o *writerOptions) {
+		o.indexPath = indexPath
+	}
+}
+
+func WithWriterSplitSize(size int64) WriterOption {
+	return func(o *writerOptions) {
+		o.splitSize = size
 	}
 }
 
 func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteCloser, error) {
-	f, err := os.Create(name)
+	var wopts writerOptions
+	for _, o := range opts {
+		o(&wopts)
+	}
+
+	var f io.WriteCloser
+	var err error
+	if wopts.splitSize > 0 {
+		f, err = NewMultiVolumeWriter(name, wopts.splitSize)
+	} else {
+		f, err = os.Create(name)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -73,8 +91,13 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 		seenParents:   make(map[string]bool),
 	}
 
-	for _, o := range opts {
-		o(wc)
+	if wopts.indexPath != "" {
+		os.Remove(wopts.indexPath)
+		idx, err := OpenIndex(wopts.indexPath)
+		if err == nil {
+			wc.idx = idx
+			wc.idx.InitMetadata()
+		}
 	}
 
 	if wc.idx != nil && method == GZIP {

@@ -3,7 +3,8 @@ package tar
 import (
 	"archive/tar"
 	"io"
-    "errors"
+	"errors"
+	"os"
 )
 
 type ReadCloser struct {
@@ -18,25 +19,25 @@ func OpenReader(name string) (*ReadCloser, error) {
 }
 
 func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
-	ra, size, closer, err := openMultiVolume(name)
+	mvr, size, err := OpenMultiVolume(name, os.O_RDONLY)
 	if err != nil {
 		return nil, err
 	}
-	ra, size, err = checkF4Recovery(ra, size)
+	ra, size, err := checkF4Recovery(mvr, size)
 	if err != nil {
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
 	raDec, sizeDec, err := checkF4Crypt(ra, size, password)
 	if err != nil {
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
 	method, err := DetectFormat(raDec)
 	if err != nil {
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
@@ -46,13 +47,13 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 	if method != Store {
 		di, ok := decompressors.Load(method)
 		if !ok {
-			closer.Close()
+			mvr.Close()
 			return nil, ErrAlgorithm
 		}
 
 		dcomp, err = di.(Decompressor).Decompress(rd)
 		if err != nil {
-			closer.Close()
+			mvr.Close()
 			return nil, err
 		}
 		rd = dcomp
@@ -60,7 +61,7 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 
 	return &ReadCloser{
 		Reader: tar.NewReader(rd),
-		f:      closer,
+		f:      mvr,
 		dcomp:  dcomp,
 	}, nil
 }

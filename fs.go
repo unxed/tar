@@ -56,20 +56,21 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		}
 	}
 
-	ra, size, closer, err := openMultiVolume(archivePath)
+	mvr, size, err := OpenMultiVolume(archivePath, os.O_RDONLY)
 	if err != nil {
 		return nil, err
 	}
+	var ra io.ReaderAt = mvr
 
 	ra, size, err = checkF4Crypt(ra, size, options.password)
 	if err != nil {
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
 	method, err := DetectFormat(ra)
 	if err != nil {
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
@@ -85,7 +86,7 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		} else {
 			// No embedded index found, build it on-the-fly
 			if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
-				closer.Close()
+				mvr.Close()
 				return nil, errIdx
 			}
 		}
@@ -93,7 +94,7 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 
 	idx, err := OpenIndex(indexPath)
 	if err != nil {
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
@@ -108,7 +109,7 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		Index:       idx,
 		method:           method,
 		xzBlocks:         xzBlocks,
-		closer:           closer,
+		closer:           mvr,
 		isTemporaryIndex: isTemporaryIndex,
 		password:         options.password,
 	}, nil
@@ -293,14 +294,15 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		return &dirFile{node: node, tfs: t, offset: 0}, nil
 	}
 
-	ra, size, closer, err := openMultiVolume(t.ArchivePath)
+	mvr, size, err := OpenMultiVolume(t.ArchivePath, os.O_RDONLY)
 	if err != nil {
 		return nil, err
 	}
+	var ra io.ReaderAt = mvr
 
 	ra, size, err = checkF4Crypt(ra, size, t.password)
 	if err != nil {
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
@@ -315,19 +317,19 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 			sr := io.NewSectionReader(ra, targetOffset, size - targetOffset)
 			tr := NewReader(sr)
 			if _, err := tr.Next(); err != nil {
-				closer.Close()
+				mvr.Close()
 				return nil, err
 			}
-			return &tarFile{node: node, r: tr, c: closer}, nil
+			return &tarFile{node: node, r: tr, c: mvr}, nil
 		}
 		sr := io.NewSectionReader(ra, targetOffset, node.Size)
-		return &tarFile{node: node, r: sr, c: closer}, nil
+		return &tarFile{node: node, r: sr, c: mvr}, nil
 	}
 
 	// Emulate random access for compressed streams.
 	di, ok := decompressors.Load(t.method)
 	if !ok {
-		closer.Close()
+		mvr.Close()
 		return nil, ErrAlgorithm
 	}
 	decompressorObj := di.(Decompressor)
@@ -358,7 +360,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 					if remaining > 0 {
 						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 							dcomp.Close()
-							closer.Close()
+							mvr.Close()
 							return nil, err
 						}
 					}
@@ -367,13 +369,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						tr := NewReader(dcomp)
 						if _, err := tr.Next(); err != nil {
 							dcomp.Close()
-							closer.Close()
+							mvr.Close()
 							return nil, err
 						}
-						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, closer}}, nil
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, mvr}}, nil
 					}
 					lr := io.LimitReader(dcomp, node.Size)
-					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, closer}}, nil
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, mvr}}, nil
 				}
 			}
 		}
@@ -397,7 +399,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 					if remaining > 0 {
 						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 							dcomp.Close()
-							closer.Close()
+							mvr.Close()
 							return nil, err
 						}
 					}
@@ -406,13 +408,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						tr := NewReader(dcomp)
 						if _, err := tr.Next(); err != nil {
 							dcomp.Close()
-							closer.Close()
+							mvr.Close()
 							return nil, err
 						}
-						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, closer}}, nil
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, mvr}}, nil
 					}
 					lr := io.LimitReader(dcomp, node.Size)
-					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, closer}}, nil
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, mvr}}, nil
 				}
 			}
 		}
@@ -433,7 +435,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						if remaining > 0 {
 							if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
 								dcomp.Close()
-								closer.Close()
+								mvr.Close()
 								return nil, err
 							}
 						}
@@ -443,13 +445,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 						tr := NewReader(dcomp)
 						if _, err := tr.Next(); err != nil {
 							dcomp.Close()
-							closer.Close()
+							mvr.Close()
 							return nil, err
 						}
-						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, closer}}, nil
+						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, mvr}}, nil
 					}
 					lr := io.LimitReader(dcomp, node.Size)
-					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, closer}}, nil
+					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, mvr}}, nil
 				}
 			}
 		}
@@ -459,14 +461,14 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 	sr := io.NewSectionReader(ra, 0, size)
 	dcomp, err = decompressorObj.Decompress(sr)
 	if err != nil {
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
 	_, err = io.CopyN(io.Discard, dcomp, targetOffset)
 	if err != nil && err != io.EOF {
 		dcomp.Close()
-		closer.Close()
+		mvr.Close()
 		return nil, err
 	}
 
@@ -474,13 +476,13 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 		tr := NewReader(dcomp)
 		if _, err := tr.Next(); err != nil {
 			dcomp.Close()
-			closer.Close()
+			mvr.Close()
 			return nil, err
 		}
-		return &tarFile{node: node, r: tr, c: multiCloser{dcomp, closer}}, nil
+		return &tarFile{node: node, r: tr, c: multiCloser{dcomp, mvr}}, nil
 	}
 	lr := io.LimitReader(dcomp, node.Size)
-	return &tarFile{node: node, r: lr, c: multiCloser{dcomp, closer}}, nil
+	return &tarFile{node: node, r: lr, c: multiCloser{dcomp, mvr}}, nil
 }
 
 type multiCloser []io.Closer

@@ -18,11 +18,11 @@ func TestMultiVolumeReader_Tar(t *testing.T) {
 	os.WriteFile(vol2Path, []byte("PART2"), 0644)
 
 	// Открываем через базовый путь (без суффикса номера)
-	ra, size, closer, err := openMultiVolume(filepath.Join(tmp, "test.tar"))
+	ra, size, err := OpenMultiVolume(filepath.Join(tmp, "test.tar"), os.O_RDONLY)
 	if err != nil {
 		t.Fatalf("failed to open multivolume tar: %v", err)
 	}
-	defer closer.Close()
+	defer ra.Close()
 
 	if size != 10 {
 		t.Errorf("expected size 10, got %d", size)
