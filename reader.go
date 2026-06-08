@@ -22,6 +22,11 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	ra, size, err = checkF4Recovery(ra, size)
+	if err != nil {
+		closer.Close()
+		return nil, err
+	}
 
 	raDec, sizeDec, err := checkF4Crypt(ra, size, password)
 	if err != nil {

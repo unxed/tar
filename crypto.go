@@ -284,7 +284,7 @@ func encapsulateF4Crypt(finalPath, tempPath, password string) error {
 	fi, _ = out.Stat()
 	shadowSize := fi.Size() - shadowStart
 
-	return writeMagicFooter(out, Store, shadowStart, shadowSize)
+	return WriteMagicFooter(out, Store, shadowStart, shadowSize)
 }
 
 // checkF4Crypt identifies F4Crypt outer layers and returns a transparent decrypted ReaderAt.

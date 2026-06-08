@@ -21,6 +21,7 @@ type archiverOptions struct {
 	xattrs      bool
 	embeddedIdx bool
 	password    string
+	recoveryPct int
 }
 
 // WithArchiverEmbeddedIndex appends the index directly inside the archive (F4 Shadow Stream).
@@ -34,6 +35,13 @@ func WithArchiverPassword(p string) ArchiverOption {
 func WithArchiverEmbeddedIndex(b bool) ArchiverOption {
 	return func(o *archiverOptions) error {
 		o.embeddedIdx = b
+		return nil
+	}
+}
+// WithArchiverRecovery устанавливает процент избыточности PAR2 для защиты архива
+func WithArchiverRecovery(pct int) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.recoveryPct = pct
 		return nil
 	}
 }
@@ -217,7 +225,7 @@ func (a *Archiver) closeInternal() error {
 	}
 
 	shadowSize := a.wc.compTracker.pos - shadowStartOffset
-	err = writeMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)
+	err = WriteMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)
 	if err != nil {
 		return err
 	}
