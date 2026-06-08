@@ -225,7 +225,7 @@ func (a *Archiver) closeInternal() error {
 	}
 
 	shadowSize := a.wc.compTracker.pos - shadowStartOffset
-	err = writeMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)
+	err = WriteMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)
 	if err != nil {
 		return err
 	}

@@ -8,9 +8,9 @@ import (
 // F4 Magic Constants
 var magicF4IDX = []byte("F4IDX\x00\x00\x00") // 8 bytes
 
-// writeMagicFooter appends a physical footer at the end of the archive so TarFS can locate
+// WriteMagicFooter appends a physical footer at the end of the archive so TarFS can locate
 // the shadow stream in O(1) time without scanning backwards.
-func writeMagicFooter(w io.Writer, method uint16, shadowStart, shadowSize int64) error {
+func WriteMagicFooter(w io.Writer, method uint16, shadowStart, shadowSize int64) error {
 	var footer []byte
 
 	switch method {
