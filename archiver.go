@@ -38,6 +38,13 @@ func WithArchiverEmbeddedIndex(b bool) ArchiverOption {
 		return nil
 	}
 }
+// WithArchiverRecovery устанавливает процент избыточности PAR2 для защиты архива
+func WithArchiverRecovery(pct int) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.recoveryPct = pct
+		return nil
+	}
+}
 
 // WithArchiverXattrs enables archiving of extended attributes (xattrs, POSIX ACLs, SELinux).
 func WithArchiverXattrs(b bool) ArchiverOption {
