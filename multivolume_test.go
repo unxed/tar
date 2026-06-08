@@ -37,3 +37,50 @@ func TestMultiVolumeReader_Tar(t *testing.T) {
 		t.Errorf("multivolume read failed: got %q", string(buf))
 	}
 }
+
+func TestMultiVolumeWriter_Roundtrip(t *testing.T) {
+	tmp := t.TempDir()
+	mainPath := filepath.Join(tmp, "test_write.tar")
+	splitSize := int64(10) // 10 bytes per volume
+
+	mvw, err := NewMultiVolumeWriter(mainPath, splitSize)
+	if err != nil {
+		t.Fatalf("failed to create MultiVolumeWriter: %v", err)
+	}
+
+	data := []byte("abcdefghijklmnopqrstuvwxyz") // 26 bytes -> 001(10), 002(10), 003(6)
+	if _, err := mvw.Write(data); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := mvw.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+
+	if _, err := os.Stat(mainPath + ".001"); err != nil {
+		t.Errorf("missing volume .001")
+	}
+	if _, err := os.Stat(mainPath + ".002"); err != nil {
+		t.Errorf("missing volume .002")
+	}
+	if _, err := os.Stat(mainPath + ".003"); err != nil {
+		t.Errorf("missing volume .003")
+	}
+
+	mvr, totalSize, err := OpenMultiVolume(mainPath, os.O_RDONLY)
+	if err != nil {
+		t.Fatalf("failed to open multi-volume reader: %v", err)
+	}
+	defer mvr.Close()
+
+	if totalSize != int64(len(data)) {
+		t.Errorf("expected size %d, got %d", len(data), totalSize)
+	}
+
+	buf := make([]byte, len(data))
+	if _, err := mvr.ReadAt(buf, 0); err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if string(buf) != string(data) {
+		t.Errorf("content mismatch: got %q, want %q", string(buf), string(data))
+	}
+}
