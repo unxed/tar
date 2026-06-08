@@ -21,6 +21,7 @@ type archiverOptions struct {
 	xattrs      bool
 	embeddedIdx bool
 	password    string
+	recoveryPct int
 }
 
 // WithArchiverEmbeddedIndex appends the index directly inside the archive (F4 Shadow Stream).
