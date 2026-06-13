@@ -23,7 +23,3 @@ func sysXattrs(path string, hdr *tar.Header) error {
 func applyXattrs(path string, hdr *tar.Header) error {
 	return nil
 }
-
-func createWindowsSymlink(target, link string, isDir bool) error {
-	return nil // No-op, never called on non-Windows
-}
