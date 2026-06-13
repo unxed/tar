@@ -1,8 +1,10 @@
 package tar
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -163,6 +165,7 @@ func (a *Archiver) closeInternal() error {
 	}
 
 	idx := a.wc.idx
+	var gzidxData []byte
 	if idx != nil {
 		if len(a.wc.batch) > 0 {
 			idx.Insert(a.wc.batch)
@@ -179,6 +182,7 @@ func (a *Archiver) closeInternal() error {
 			}
 			if data, err := gzidx.ExportGzipIndex(); err == nil {
 				idx.SaveGzipIndex(data)
+				gzidxData = data
 			}
 		}
 	}
@@ -230,6 +234,38 @@ func (a *Archiver) closeInternal() error {
 	if _, err := shadowTar.Write(idxData); err != nil {
 		return err
 	}
+
+	// Write standard GZIDX payload if GZIP method is used
+	if a.options.method == GZIP && len(gzidxData) > 0 {
+		shadowTar.WriteHeader(&Header{Name: ".tarext/GZIDX/", Mode: 0755, Typeflag: TypeDir})
+		gzhdr := &Header{
+			Name:     ".tarext/GZIDX/index.gzidx",
+			Mode:     0644,
+			Size:     int64(len(gzidxData)),
+			Typeflag: TypeReg,
+		}
+		if err := shadowTar.WriteHeader(gzhdr); err == nil {
+			shadowTar.Write(gzidxData)
+		}
+	}
+
+	// Write standard DZIDX payload if ZSTD method is used and block offsets exist
+	if a.options.method == ZSTD && len(a.wc.zstdBlocks) > 0 {
+		dzidxData := exportDZIDX(a.wc.zstdBlocks, a.wc.compTracker.pos, a.wc.uncompTracker.pos)
+		if len(dzidxData) > 0 {
+			shadowTar.WriteHeader(&Header{Name: ".tarext/dictzip/", Mode: 0755, Typeflag: TypeDir})
+			dzhdr := &Header{
+				Name:     ".tarext/dictzip/index.dzidx",
+				Mode:     0644,
+				Size:     int64(len(dzidxData)),
+				Typeflag: TypeReg,
+			}
+			if err := shadowTar.WriteHeader(dzhdr); err == nil {
+				shadowTar.Write(dzidxData)
+			}
+		}
+	}
+
 	shadowTar.Close()
 
 	if shadowComp != nil {
@@ -414,4 +450,43 @@ func Compress(inputFilePath, outputFilePath string) error {
 	}
 
 	return a.Archive(context.Background(), files)
+}
+
+func exportDZIDX(offsets []BlockOffset, totalComp, totalUncomp int64) []byte {
+	if len(offsets) == 0 {
+		return nil
+	}
+	p := len(offsets)
+	entrySize := 4
+	buf := new(bytes.Buffer)
+	buf.Write([]byte("DZIDX"))
+	buf.WriteByte(1) // version
+	var entSizeBuf [2]byte
+	binary.LittleEndian.PutUint16(entSizeBuf[:], uint16(entrySize))
+	buf.Write(entSizeBuf[:])
+	var chunkInterval uint32 = 4 * 1024 * 1024
+	var chunkIntBuf [4]byte
+	binary.LittleEndian.PutUint32(chunkIntBuf[:], chunkInterval)
+	buf.Write(chunkIntBuf[:])
+	var pBuf [4]byte
+	binary.LittleEndian.PutUint32(pBuf[:], uint32(p))
+	buf.Write(pBuf[:])
+	var totalUncompBuf [8]byte
+	binary.LittleEndian.PutUint64(totalUncompBuf[:], uint64(totalUncomp))
+	buf.Write(totalUncompBuf[:])
+	var totalCompBuf [8]byte
+	binary.LittleEndian.PutUint64(totalCompBuf[:], uint64(totalComp))
+	buf.Write(totalCompBuf[:])
+	for i := 0; i < p; i++ {
+		var compSize int64
+		if i == p-1 {
+			compSize = totalComp - offsets[i].BlockOffset
+		} else {
+			compSize = offsets[i+1].BlockOffset - offsets[i].BlockOffset
+		}
+		var szBuf [4]byte
+		binary.LittleEndian.PutUint32(szBuf[:], uint32(compSize))
+		buf.Write(szBuf[:])
+	}
+	return buf.Bytes()
 }

@@ -235,3 +235,42 @@ Because AES-CTR operates as a stream cipher, decrypting any specific block insid
    - Increment the base IV by $Block$ (treated as a 128-bit big-endian integer) to get the current counter block.
    - Encrypt the counter block with AES-256 to generate the 16-byte keystream.
    - XOR the ciphertext from `payload.enc` starting at offset $X$ with the keystream starting at index $Rem$.
+
+## 6. Multi-Volume Archives (Splitting)
+
+To facilitate the storage and transfer of massive archives over size-restricted mediums or systems, f4 TAR supports splitting archives into multiple sequential volumes.
+
+### 6.1. Naming Convention
+Split volumes are stored with a standard 3-digit zero-padded suffix appended to the base file name, starting from `.001`:
+`archive.tar.001`, `archive.tar.002`, `archive.tar.003`, etc.
+
+### 6.2. I/O Operations
+- **Reading:** F4-aware readers MUST automatically detect and open sequential volume parts if they exist. They present a unified virtual stream of the combined size.
+- **Writing:** Writers can be configured with a split threshold size. When writing, they automatically start a new volume file once the threshold is reached.
+
+## 7. Integrity and Recovery Protection (F4Recovery)
+
+To protect archives from physical media corruption and bit rot, f4 TAR integrates standard PAR2 (Reed-Solomon) recovery blocks directly into the archive file compliantly.
+
+### 7.1. Structure
+The recovery data is appended to the absolute end of the file (or the last volume). The layout is as follows:
+
+```text
++----------------------------------------------------------------+
+| Original Archive Stream                                        |
++----------------------------------------------------------------+
+| PAR2 Recovery Stream (Standard PAR2 packets)                   |
++----------------------------------------------------------------+
+| 32-byte F4Recovery Magic Footer                                |
++----------------------------------------------------------------+
+```
+
+### 7.2. F4Recovery Magic Footer Layout
+A 32-byte physical footer placed at the absolute end of the file:
+- `[0:8]`   - `uint64` Little Endian - Size of the PAR2 Recovery Stream
+- `[8:16]`  - `uint64` Little Endian - Original size of the archive stream (excluding recovery data)
+- `[16:32]` - ASCII string - `"F4RECOVERY\x00\x00\x00\x00\x00\x00"` signature
+
+### 7.3. Extraction Compatibility
+- **F4-aware Tools:** Read the 32-byte footer, locate the original archive bounds, and parse only the original archive, while ignoring/validating the recovery records.
+- **Standard Tools:** Since the recovery data sits after the end of the original archive (such as after the double-zero block of Stream 1/2 or standard container EOF), legacy archivers automatically ignore the trailing recovery data.

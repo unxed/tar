@@ -1,16 +1,17 @@
 package tar
 
 import (
-	"context"
 	"bytes"
+	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
-	"testing"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -631,5 +632,156 @@ func TestEmbeddedIndex_Roundtrip(t *testing.T) {
 				t.Errorf("Content mismatch: expected 'embedded index verification data', got %q", string(data))
 			}
 		})
+	}
+}
+
+// TestEmbeddedShadowExtraPayloads verifies that standard index payloads (GZIDX and DZIDX)
+// are successfully written to Stream 2 (the shadow stream) of the archive.
+func TestEmbeddedShadowExtraPayloads(t *testing.T) {
+	methods := []uint16{GZIP, ZSTD}
+
+	for _, method := range methods {
+		t.Run(fmt.Sprintf("Method_%d", method), func(t *testing.T) {
+			tmpDir := t.TempDir()
+			srcDir := filepath.Join(tmpDir, "src")
+			os.MkdirAll(srcDir, 0755)
+
+			filePath := filepath.Join(srcDir, "test.txt")
+			// Create a >4MB file to trigger the flush threshold and generate multiple frames/seek-points
+			largeData := bytes.Repeat([]byte("highly compressible repeated chunk payload data "), 250000)
+			os.WriteFile(filePath, largeData, 0644)
+
+			archivePath := filepath.Join(tmpDir, "archive.tar")
+			if method == GZIP {
+				archivePath += ".gz"
+			} else {
+				archivePath += ".zst"
+			}
+
+			indexPath := filepath.Join(tmpDir, "index.sqlite")
+
+			a, err := NewArchiver(archivePath, tmpDir,
+				WithArchiverMethod(method),
+				WithArchiverIndex(indexPath),
+				WithArchiverEmbeddedIndex(true),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			fi, _ := os.Stat(filePath)
+			files := map[string]os.FileInfo{filePath: fi}
+
+			if err := a.Archive(context.Background(), files); err != nil {
+				t.Fatal(err)
+			}
+			a.Close()
+
+			f, err := os.Open(archivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			fiArch, _ := f.Stat()
+			shadowStart, shadowSize, err := LocateShadowStream(f, fiArch.Size(), method)
+			if err != nil {
+				t.Fatalf("Failed to locate shadow stream: %v", err)
+			}
+			if shadowSize == 0 {
+				t.Fatal("Shadow stream size is zero")
+			}
+
+			sr := io.NewSectionReader(f, shadowStart, shadowSize)
+			var rd io.Reader = sr
+
+			di, ok := decompressors.Load(method)
+			if !ok {
+				t.Fatal("Failed to load decompressor")
+			}
+			dcomp, err := di.(Decompressor).Decompress(rd)
+			if err != nil {
+				t.Fatalf("Decompress shadow stream failed: %v", err)
+			}
+			defer dcomp.Close()
+
+			tr := NewReader(dcomp)
+			foundIndexFile := false
+			expectedName := ".tarext/GZIDX/index.gzidx"
+			if method == ZSTD {
+				expectedName = ".tarext/dictzip/index.dzidx"
+			}
+
+			for {
+				hdr, err := tr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("Tar next failed: %v", err)
+				}
+				if hdr.Name == expectedName {
+					foundIndexFile = true
+					data, err := io.ReadAll(tr)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(data) == 0 {
+						t.Errorf("Expected index payload %s to be non-empty", expectedName)
+					}
+					if method == GZIP {
+						gr, err := gzip.NewReader(bytes.NewReader(data))
+						if err == nil {
+							defer gr.Close()
+							decomp, _ := io.ReadAll(gr)
+							if len(decomp) < 5 || string(decomp[:5]) != "GZIDX" {
+								t.Errorf("Invalid GZIDX magic in decompressed payload")
+							}
+						} else {
+							t.Errorf("GZIDX shadow payload is not a valid gzip file: %v", err)
+						}
+					} else if method == ZSTD {
+						if len(data) < 5 || string(data[:5]) != "DZIDX" {
+							t.Errorf("Expected DZIDX signature in ZSTD shadow payload, got %q", string(data))
+						}
+					}
+				}
+			}
+
+			if !foundIndexFile {
+				t.Errorf("Failed to find standard index file %s in shadow stream", expectedName)
+			}
+		})
+	}
+}
+
+// TestExportDZIDX_EdgeCases verifies bounds and structure of DZIDX format under different offset conditions.
+func TestExportDZIDX_EdgeCases(t *testing.T) {
+	// Case 1: Empty offsets should return nil
+	if res := exportDZIDX(nil, 100, 100); res != nil {
+		t.Errorf("Expected nil for empty offsets, got %v", res)
+	}
+
+	// Case 2: Single block offset
+	offsets := []BlockOffset{{BlockOffset: 0, DataOffset: 0}}
+	res := exportDZIDX(offsets, 100, 100)
+	if len(res) == 0 {
+		t.Fatal("Expected non-empty DZIDX for single offset")
+	}
+	if string(res[:5]) != "DZIDX" {
+		t.Errorf("Expected DZIDX magic, got %q", res[:5])
+	}
+
+	// Case 3: Multiple offsets (calculating accurate contiguous chunks)
+	offsets = []BlockOffset{
+		{BlockOffset: 0, DataOffset: 0},
+		{BlockOffset: 500, DataOffset: 1000},
+	}
+	res2 := exportDZIDX(offsets, 1200, 3000)
+	if len(res2) == 0 {
+		t.Fatal("Expected non-empty DZIDX for multiple offsets")
+	}
+	if len(res2) < 32 {
+		t.Errorf("Expected DZIDX header to be at least 32 bytes, got %d", len(res2))
 	}
 }
