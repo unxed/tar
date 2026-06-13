@@ -5,6 +5,11 @@ import (
 	"io"
 	"os"
 )
+import (
+	"github.com/klauspost/compress/flate"
+	"github.com/klauspost/compress/gzip"
+	"github.com/klauspost/compress/zstd"
+)
 
 type WriteCloser struct {
 	*tar.Writer
@@ -27,6 +32,13 @@ type WriteCloser struct {
 type writerOptions struct {
 	indexPath string
 	splitSize int64
+	level     int
+}
+
+func WithWriterLevel(level int) WriterOption {
+	return func(o *writerOptions) {
+		o.level = level
+	}
 }
 
 type WriterOption func(*writerOptions)
@@ -66,12 +78,23 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 	var comp io.WriteCloser
 
 	if method != Store {
-		ci, ok := compressors.Load(method)
-		if !ok {
-			f.Close()
-			return nil, ErrAlgorithm
+		if wopts.level != 0 {
+			if method == GZIP {
+				comp, err = gzip.NewWriterLevel(wr, wopts.level)
+			} else if method == ZSTD {
+				comp, err = zstd.NewWriter(wr, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(wopts.level)))
+			} else if method == Deflate {
+				comp, err = flate.NewWriter(wr, wopts.level)
+			}
 		}
-		comp, err = ci.(Compressor)(wr)
+		if comp == nil && err == nil {
+			ci, ok := compressors.Load(method)
+			if !ok {
+				f.Close()
+				return nil, ErrAlgorithm
+			}
+			comp, err = ci.(Compressor)(wr)
+		}
 		if err != nil {
 			f.Close()
 			return nil, err

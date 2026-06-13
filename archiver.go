@@ -26,6 +26,15 @@ type archiverOptions struct {
 	recoveryPct int
 	splitSize   int64
 	lock        bool
+	level       int
+}
+
+// WithArchiverLevel sets the compression level.
+func WithArchiverLevel(level int) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.level = level
+		return nil
+	}
 }
 
 // WithArchiverLock locks the archive to prevent modifications.
@@ -157,6 +166,9 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 	}
 	if a.options.splitSize > 0 {
 		wopts = append(wopts, WithWriterSplitSize(a.options.splitSize))
+	}
+	if a.options.level != 0 {
+		wopts = append(wopts, WithWriterLevel(a.options.level))
 	}
 
 	wc, err := CreateWriter(targetFile, a.options.method, wopts...)
