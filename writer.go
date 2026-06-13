@@ -6,7 +6,6 @@ import (
 	"os"
 )
 import (
-	"github.com/klauspost/compress/flate"
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 )
@@ -83,8 +82,6 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 				comp, err = gzip.NewWriterLevel(wr, wopts.level)
 			} else if method == ZSTD {
 				comp, err = zstd.NewWriter(wr, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(wopts.level)))
-			} else if method == Deflate {
-				comp, err = flate.NewWriter(wr, wopts.level)
 			}
 		}
 		if comp == nil && err == nil {
