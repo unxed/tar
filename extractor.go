@@ -365,7 +365,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			continue
 
 		case TypeGNUDumpDir:
-			os.MkdirAll(path, 0777)
+			e.synthesizeDir(path)
 			dirs[path] = hdr
 
 			if e.options.incremental && hdr.Size > 0 {
@@ -411,7 +411,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			// Reset wg with parentCtx
 			wg, ctx = errgroup.WithContext(parentCtx)
 
-			os.MkdirAll(filepath.Dir(path), 0777)
+			e.synthesizeDir(filepath.Dir(path))
 			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, os.FileMode(hdr.Mode))
 			if err != nil {
 				return err
@@ -426,7 +426,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			continue
 
 		case TypeDir:
-			os.MkdirAll(path, 0777)
+			e.synthesizeDir(path)
 			dirs[path] = hdr
 
 		case TypeSymlink, TypeLink:
@@ -435,7 +435,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			continue
 
 		case TypeChar, TypeBlock, TypeFifo:
-			os.MkdirAll(filepath.Dir(path), 0777)
+			e.synthesizeDir(filepath.Dir(path))
 			wg.Go(func() error {
 				err := extractSpecialFile(path, hdr)
 				if err != nil {
@@ -459,7 +459,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			})
 
 		case TypeReg, TypeRegA:
-			os.MkdirAll(filepath.Dir(path), 0777)
+			e.synthesizeDir(filepath.Dir(path))
 
 			// Protection against bombs
 			if e.options.maxFileSize > 0 && hdr.Size > e.options.maxFileSize {
@@ -754,6 +754,48 @@ func (e *Extractor) linksToDirs(targetPath string) error {
 		if fi.Mode()&os.ModeSymlink != 0 {
 			if err := os.Remove(current); err != nil {
 				return err
+			}
+		}
+	}
+	return nil
+}
+// synthesizeDir guarantees that a directory exists on disk,
+// recovering missing structures and resolving file/directory conflicts on the fly.
+func (e *Extractor) synthesizeDir(targetDir string) error {
+	err := os.MkdirAll(targetDir, 0755)
+	if err == nil {
+		return nil
+	}
+
+	if !strings.HasPrefix(targetDir, e.chroot) {
+		return nil
+	}
+	rel, errRel := filepath.Rel(e.chroot, targetDir)
+	if errRel != nil {
+		return errRel
+	}
+
+	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
+	current := e.chroot
+
+	for i := 0; i < len(parts); i++ {
+		current = filepath.Join(current, parts[i])
+		fi, errStat := os.Lstat(current)
+		if errStat != nil {
+			if os.IsNotExist(errStat) {
+				if errMk := os.Mkdir(current, 0755); errMk != nil && !os.IsExist(errMk) {
+					return errMk
+				}
+			} else {
+				return errStat
+			}
+		} else if !fi.IsDir() {
+			if errRm := os.Remove(current); errRm == nil {
+				if errMk := os.Mkdir(current, 0755); errMk != nil {
+					return errMk
+				}
+			} else {
+				return errRm
 			}
 		}
 	}
