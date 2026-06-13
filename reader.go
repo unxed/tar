@@ -9,8 +9,9 @@ import (
 
 type ReadCloser struct {
 	*tar.Reader
-	f     io.Closer
-	dcomp io.ReadCloser
+	f         io.Closer
+	dcomp     io.ReadCloser
+	rawReader io.Reader
 }
 
 // OpenReader opens a TAR or compressed TAR file (.tar, .tar.gz, .tar.zst, etc.).
@@ -60,10 +61,24 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 	}
 
 	return &ReadCloser{
-		Reader: tar.NewReader(rd),
-		f:      mvr,
-		dcomp:  dcomp,
+		Reader:    tar.NewReader(rd),
+		f:         mvr,
+		dcomp:     dcomp,
+		rawReader: rd,
 	}, nil
+}
+
+func (rc *ReadCloser) Next() (*Header, error) {
+	hdr, err := rc.Reader.Next()
+	if err == io.EOF && rc.rawReader != nil {
+		newReader := tar.NewReader(rc.rawReader)
+		newHdr, newErr := newReader.Next()
+		if newErr == nil {
+			rc.Reader = newReader
+			return newHdr, nil
+		}
+	}
+	return hdr, err
 }
 
 func (rc *ReadCloser) Close() error {

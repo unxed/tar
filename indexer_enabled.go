@@ -38,8 +38,19 @@ func IndexArchive(archivePath, indexPath string) error {
 	for {
 		headerOffset = tr.pos
 		hdr, err := trd.Next()
-		if err == io.EOF { break }
-		if err != nil { return err }
+		if err == io.EOF {
+			// Check if there's another tar archive appended after double-zero blocks
+			newReader := tar.NewReader(tr)
+			newHdr, newErr := newReader.Next()
+			if newErr == nil {
+				trd = newReader
+				hdr = newHdr
+			} else {
+				break
+			}
+		} else if err != nil {
+			return err
+		}
 		hdrName := hdr.Name
 		if !utf8.ValidString(hdrName) { hdrName = decodeUTF8OrMap([]byte(hdrName)) }
 		hdrLinkname := hdr.Linkname

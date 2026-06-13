@@ -17,11 +17,12 @@ const (
 var ErrArchiveLocked = errors.New("tar: cannot modify archive, it is locked")
 
 type Updater struct {
-	f           *os.File
-	tw          *tar.Writer
+	f            *os.File
+	tw           *tar.Writer
+	comp         io.WriteCloser
 	isCompressed bool
-	compMethod  uint16
-	shadowStart int64
+	compMethod   uint16
+	shadowStart  int64
 }
 
 // NewUpdater opens a .tar or compressed .tar file for appending.
@@ -100,13 +101,15 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 	}
 
 	var tw *tar.Writer
+	var comp io.WriteCloser
 	if isCompressed {
 		// Initialize the appropriate compressor starting from truncated position
 		ci, ok := compressors.Load(method)
 		if !ok {
 			return nil, ErrAlgorithm
 		}
-		comp, err := ci.(Compressor)(f)
+		var err error
+		comp, err = ci.(Compressor)(f)
 		if err != nil {
 			return nil, err
 		}
@@ -118,6 +121,7 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 	return &Updater{
 		f:            f,
 		tw:           tw,
+		comp:         comp,
 		isCompressed: isCompressed,
 		compMethod:   method,
 		shadowStart:  shadowStart,
@@ -126,37 +130,53 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 
 // Append creates a new file entry in the archive.
 func (u *Updater) Append(name string, size int64, data []byte) error {
-	if _, err := u.f.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
+	println("[DIAG-UPD] Append: Starting append for", name, "size=", size)
 
 	stat, err := u.f.Stat()
 	if err != nil {
 		return err
 	}
 	endOfArchive := stat.Size()
+	println("[DIAG-UPD] Append: Current physical size=", endOfArchive)
 
-	tr := &trackingReader{r: u.f}
-	trd := NewReader(tr)
+	// Дамп байт перед началом записи
+	headerBytes := make([]byte, 32)
+	u.f.ReadAt(headerBytes, 0)
+	print("[DIAG-UPD] Append: First 32 bytes of archive: ")
+	for _, b := range headerBytes {
+		print(uint8(b), " ")
+	}
+	println()
 
 	var targetStart int64 = -1
 	var targetEnd int64 = -1
 
-	for {
-		headerOffset := tr.pos
-		hdr, err := trd.Next()
-		if err == io.EOF {
-			break
+	if !u.isCompressed {
+		if _, err := u.f.Seek(0, io.SeekStart); err != nil {
+			return err
 		}
-		if err != nil {
-			break
-		}
+		tr := &trackingReader{r: u.f}
+		trd := NewReader(tr)
 
-		if hdr.Name == name {
-			targetStart = headerOffset
-			targetEnd = tr.pos + ((hdr.Size + 511) &^ 511)
-			break
+		for {
+			headerOffset := tr.pos
+			hdr, err := trd.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				break
+			}
+
+			if hdr.Name == name {
+				targetStart = headerOffset
+				targetEnd = tr.pos + ((hdr.Size + 511) &^ 511)
+				println("[DIAG-UPD] Append: Found existing entry duplication! targetStart=", targetStart, "targetEnd=", targetEnd)
+				break
+			}
 		}
+	} else {
+		println("[DIAG-UPD] Append: Compressed archive, skipping duplication scan")
 	}
 
 	if targetStart != -1 && targetEnd != -1 {
@@ -183,6 +203,7 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 			}
 		}
 		newSize := endOfArchive - removeSize
+		println("[DIAG-UPD] Append: Compaction triggered. Truncating to", newSize)
 		if err := u.f.Truncate(newSize); err != nil {
 			return err
 		}
@@ -191,10 +212,11 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 		}
 		u.tw = NewWriter(u.f)
 	} else {
-		if _, err := u.f.Seek(0, io.SeekEnd); err != nil {
-			return err
+		pos, _ := u.f.Seek(0, io.SeekEnd)
+		println("[DIAG-UPD] Append: Appending at SeekEnd position=", pos)
+		if !u.isCompressed {
+			u.tw = NewWriter(u.f)
 		}
-		u.tw = NewWriter(u.f)
 	}
 
 	hdr := &tar.Header{
@@ -202,17 +224,30 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 		Mode: 0644,
 		Size: size,
 	}
+	println("[DIAG-UPD] Append: Writing Header for", name)
 	if err := u.tw.WriteHeader(hdr); err != nil {
+		println("[DIAG-UPD] Append: WriteHeader failed:", err.Error())
 		return err
 	}
 	if len(data) > 0 {
+		println("[DIAG-UPD] Append: Writing content size=", len(data))
 		if _, err := u.tw.Write(data); err != nil {
+			println("[DIAG-UPD] Append: Write content failed:", err.Error())
 			return err
 		}
 	}
+	println("[DIAG-UPD] Append: Done append for", name)
 	return nil
 }
 
 func (u *Updater) Close() error {
-	return u.tw.Close()
+	err := u.tw.Close()
+	if u.comp != nil {
+		if cerr := u.comp.Close(); cerr != nil {
+			if err == nil {
+				err = cerr
+			}
+		}
+	}
+	return err
 }
