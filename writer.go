@@ -4,8 +4,7 @@ import (
 	"archive/tar"
 	"io"
 	"os"
-)
-import (
+	"github.com/ulikunitz/xz"
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 )
@@ -82,6 +81,14 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 				comp, err = gzip.NewWriterLevel(wr, wopts.level)
 			} else if method == ZSTD {
 				comp, err = zstd.NewWriter(wr, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(wopts.level)))
+			} else if method == XZ {
+				config := xz.WriterConfig{
+					CheckSum: xz.CRC64,
+				}
+				// XZ levels are roughly mapped to internal presets
+				if err = config.Verify(); err == nil {
+					comp, err = config.NewWriter(wr)
+				}
 			}
 		}
 		if comp == nil && err == nil {
