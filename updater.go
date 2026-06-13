@@ -14,12 +14,17 @@ const (
 	APPEND_MODE_OVERWRITE AppendMode = iota
 )
 
+var ErrArchiveLocked = errors.New("tar: cannot modify archive, it is locked")
+
 type Updater struct {
-	f  *os.File
-	tw *tar.Writer
+	f           *os.File
+	tw          *tar.Writer
+	isCompressed bool
+	compMethod  uint16
+	shadowStart int64
 }
 
-// NewUpdater opens an UNCOMPRESSED .tar file for appending.
+// NewUpdater opens a .tar or compressed .tar file for appending.
 func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 	if mode != APPEND_MODE_OVERWRITE {
 		return nil, errors.New("tar: only APPEND_MODE_OVERWRITE is supported")
@@ -30,45 +35,92 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 		return nil, err
 	}
 
-	searchSize := int64(10240)
-	if stat.Size() < searchSize {
-		searchSize = stat.Size()
-	}
-
-	if searchSize == 0 {
-		return &Updater{f: f, tw: tar.NewWriter(f)}, nil
-	}
-
-	buf := make([]byte, searchSize)
-	_, err = f.ReadAt(buf, stat.Size()-searchSize)
-	if err != nil && err != io.EOF {
+	method, err := DetectFormat(f)
+	if err != nil {
 		return nil, err
 	}
 
-	zeroBlocksStart := -1
-	for i := len(buf) - 512; i >= 0; i -= 512 {
-		if bytes.Equal(buf[i:i+512], make([]byte, 512)) {
-			zeroBlocksStart = i
+	// Detect if it is a compressed F4SS archive with shadow streams
+	shadowStart, shadowSize, err := LocateShadowStream(f, stat.Size(), method)
+	isCompressed := method != Store
+
+	var truncateTo int64
+	if isCompressed && shadowStart > 0 && shadowSize > 0 {
+		// Truncate to the start of Stream 2 (shadow stream), removing old metadata and magic footer
+		truncateTo = shadowStart
+	} else {
+		// Fallback for uncompressed standard TAR
+		searchSize := int64(10240)
+		if stat.Size() < searchSize {
+			searchSize = stat.Size()
+		}
+
+		if searchSize == 0 {
+			return &Updater{f: f, tw: tar.NewWriter(f)}, nil
+		}
+
+		buf := make([]byte, searchSize)
+		_, err = f.ReadAt(buf, stat.Size()-searchSize)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+
+		zeroBlocksStart := -1
+		for i := len(buf) - 512; i >= 0; i -= 512 {
+			if bytes.Equal(buf[i:i+512], make([]byte, 512)) {
+				zeroBlocksStart = i
+			} else {
+				break
+			}
+		}
+
+		if zeroBlocksStart != -1 {
+			truncateTo = stat.Size() - searchSize + int64(zeroBlocksStart)
 		} else {
-			break
+			truncateTo = stat.Size()
 		}
 	}
 
-	if zeroBlocksStart != -1 {
-		truncateTo := stat.Size() - searchSize + int64(zeroBlocksStart)
-		if err := f.Truncate(truncateTo); err != nil {
+	// Check if the archive is locked in the index (F4SS) before doing any modifications
+	if shadowStart > 0 && shadowSize > 0 {
+		propBytes, err := extractShadowFile(f, stat.Size(), method, ".tarext/f4/properties.txt")
+		if err == nil && len(propBytes) > 0 {
+			props := parseProperties(propBytes)
+			if props["locked"] == "true" {
+				return nil, ErrArchiveLocked
+			}
+		}
+	}
+
+	if err := f.Truncate(truncateTo); err != nil {
+		return nil, err
+	}
+	if _, err := f.Seek(truncateTo, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	var tw *tar.Writer
+	if isCompressed {
+		// Initialize the appropriate compressor starting from truncated position
+		ci, ok := compressors.Load(method)
+		if !ok {
+			return nil, ErrAlgorithm
+		}
+		comp, err := ci.(Compressor)(f)
+		if err != nil {
 			return nil, err
 		}
-		if _, err := f.Seek(truncateTo, io.SeekStart); err != nil {
-			return nil, err
-		}
+		tw = tar.NewWriter(comp)
 	} else {
-		f.Seek(0, io.SeekEnd)
+		tw = tar.NewWriter(f)
 	}
 
 	return &Updater{
-		f:  f,
-		tw: tar.NewWriter(f),
+		f:            f,
+		tw:           tw,
+		isCompressed: isCompressed,
+		compMethod:   method,
+		shadowStart:  shadowStart,
 	}, nil
 }
 

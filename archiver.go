@@ -25,6 +25,15 @@ type archiverOptions struct {
 	password    string
 	recoveryPct int
 	splitSize   int64
+	lock        bool
+}
+
+// WithArchiverLock locks the archive to prevent modifications.
+func WithArchiverLock(b bool) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.lock = b
+		return nil
+	}
 }
 
 // WithArchiverSplitSize enables creation of multi-volume archives
@@ -86,6 +95,12 @@ type Archiver struct {
 	finalFilename        string
 	tempFilename         string
 	isTemporaryIndexPath bool
+	comment              string
+}
+
+// SetComment sets the global archive comment stored inside the F4SS shadow metadata index.
+func (a *Archiver) SetComment(comment string) {
+	a.comment = comment
 }
 
 func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archiver, error) {
@@ -164,6 +179,7 @@ func (a *Archiver) closeInternal() error {
 		return err
 	}
 
+
 	idx := a.wc.idx
 	var gzidxData []byte
 	if idx != nil {
@@ -233,6 +249,29 @@ func (a *Archiver) closeInternal() error {
 	}
 	if _, err := shadowTar.Write(idxData); err != nil {
 		return err
+	}
+
+	// Write custom F4 metadata to .tarext/f4/properties.txt, keeping index.sqlite completely pristine
+	if a.options.lock || a.comment != "" {
+		shadowTar.WriteHeader(&Header{Name: ".tarext/f4/", Mode: 0755, Typeflag: TypeDir})
+		props := make(map[string]string)
+		if a.options.lock {
+			props["locked"] = "true"
+		}
+		if a.comment != "" {
+			props["comment"] = a.comment
+		}
+		propsData := serializeProperties(props)
+
+		propHdr := &Header{
+			Name:     ".tarext/f4/properties.txt",
+			Mode:     0644,
+			Size:     int64(len(propsData)),
+			Typeflag: TypeReg,
+		}
+		if err := shadowTar.WriteHeader(propHdr); err == nil {
+			shadowTar.Write(propsData)
+		}
 	}
 
 	// Write standard GZIDX payload if GZIP method is used

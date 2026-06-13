@@ -23,6 +23,42 @@ func lchown(name string, uid, gid int) error {
 	// Not supported/needed for basic Windows extraction
 	return nil
 }
+func createWindowsSymlink(target, link string, isDir bool) error {
+	targetPath, _ := syscall.UTF16PtrFromString(target)
+	linkPath, _ := syscall.UTF16PtrFromString(link)
+
+	if isDir {
+		err := windows.CreateSymbolicLink(linkPath, targetPath, windows.SYMBOLIC_LINK_FLAG_DIRECTORY)
+		if err != nil {
+			return os.MkdirAll(link, 0755)
+		}
+		return nil
+	}
+
+	err := windows.CreateHardLink(linkPath, targetPath, 0)
+	if err != nil {
+		err = windows.CreateSymbolicLink(linkPath, targetPath, 0)
+		if err != nil {
+			return copyFileContents(target, link)
+		}
+	}
+	return nil
+}
+
+func copyFileContents(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
 
 func lchtimes(name string, atime, mtime time.Time) error {
 	// Windows doesn't easily support Lutimes without deep API calls.

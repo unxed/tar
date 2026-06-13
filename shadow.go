@@ -3,6 +3,7 @@ package tar
 import (
 	"encoding/binary"
 	"io"
+	"strings"
 )
 
 // F4 Magic Constants
@@ -136,12 +137,16 @@ func LocateShadowStream(ra io.ReaderAt, fileSize int64, method uint16) (int64, i
 
 // extractShadowIndex looks for the F4IDX magic footer and, if found, extracts and returns the SQLite database payload.
 func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, error) {
+	return extractShadowFile(ra, fileSize, method, ".tarext/ratarmount/index.sqlite")
+}
+
+// extractShadowFile extracts a specific file payload from the Stream 2 metadata shadow stream.
+func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName string) ([]byte, error) {
 	shadowStart, shadowSize, err := LocateShadowStream(ra, fileSize, method)
 	if err != nil || shadowSize == 0 {
 		return nil, err
 	}
 
-	// Read the shadow stream
 	sr := io.NewSectionReader(ra, shadowStart, shadowSize)
 	var rd io.Reader = sr
 
@@ -158,7 +163,6 @@ func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, 
 		rd = dcomp
 	}
 
-	// Parse the embedded TAR (Stream 2)
 	tr := NewReader(rd)
 	var payload []byte
 
@@ -171,8 +175,7 @@ func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, 
 			return nil, err
 		}
 
-		// Support only the standard F4SS path
-		if hdr.Name == ".tarext/ratarmount/index.sqlite" {
+		if hdr.Name == targetName {
 			payload, err = io.ReadAll(tr)
 			if err != nil {
 				return nil, err
@@ -186,4 +189,28 @@ func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, 
 	}
 
 	return payload, nil
+}
+
+func serializeProperties(props map[string]string) []byte {
+	var sb strings.Builder
+	for k, v := range props {
+		sb.WriteString(k + "=" + v + "\n")
+	}
+	return []byte(sb.String())
+}
+
+func parseProperties(data []byte) map[string]string {
+	props := make(map[string]string)
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			props[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return props
 }

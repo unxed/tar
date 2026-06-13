@@ -27,6 +27,22 @@ type TarFS struct {
 	password         string
 }
 
+// GetComment retrieves the global archive comment stored in the F4SS shadow metadata index.
+func (t *TarFS) GetComment() string {
+	mvr, size, err := OpenMultiVolume(t.ArchivePath, os.O_RDONLY)
+	if err != nil {
+		return ""
+	}
+	defer mvr.Close()
+
+	propBytes, err := extractShadowFile(mvr, size, t.method, ".tarext/f4/properties.txt")
+	if err == nil && len(propBytes) > 0 {
+		props := parseProperties(propBytes)
+		return props["comment"]
+	}
+	return ""
+}
+
 type FSOption func(*fsOptions)
 
 type fsOptions struct {

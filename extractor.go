@@ -657,8 +657,18 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			hdrLinkname = string(encodeMappedString(hdrLinkname))
 		}
 		if hdr.Typeflag == TypeSymlink {
-			if err := os.Symlink(hdrLinkname, path); err != nil {
-				return err
+			if runtime.GOOS == "windows" {
+				isDir := false
+				if fi, err := os.Stat(filepath.Join(filepath.Dir(path), hdrLinkname)); err == nil {
+					isDir = fi.IsDir()
+				}
+				if err := createWindowsSymlink(hdrLinkname, path, isDir); err != nil {
+					return err
+				}
+			} else {
+				if err := os.Symlink(hdrLinkname, path); err != nil {
+					return err
+				}
 			}
 		} else {
 			targetPath := filepath.Join(e.chroot, hdrLinkname)
