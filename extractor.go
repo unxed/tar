@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -253,6 +254,12 @@ type Extractor struct {
 	rc      *ReadCloser
 	chroot  string
 	options extractorOptions
+	written int64
+	entries int64
+}
+
+func (e *Extractor) Written() (bytes, entries int64) {
+	return atomic.LoadInt64(&e.written), atomic.LoadInt64(&e.entries)
 }
 
 func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor, error) {
@@ -428,6 +435,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		case TypeDir:
 			e.synthesizeDir(path)
 			dirs[path] = hdr
+			atomic.AddInt64(&e.entries, 1)
 
 		case TypeSymlink, TypeLink:
 			// Store links and resolve them strictly after extracting regular files to avoid race conditions.
@@ -455,6 +463,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					fmt.Printf("tar: skipping corrupted special file %q: %v\n", hdr.Name, err)
 					return nil
 				}
+				atomic.AddInt64(&e.entries, 1)
 				return err
 			})
 
@@ -549,6 +558,8 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						fmt.Printf("tar: skipping corrupted file %q: %v\n", hdr.Name, err)
 						return nil
 					}
+					atomic.AddInt64(&e.written, hdr.Size)
+					atomic.AddInt64(&e.entries, 1)
 					return err
 				})
 			} else {
@@ -625,6 +636,8 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						fmt.Printf("tar: skipping corrupted file %q: %v\n", hdr.Name, err)
 						return nil
 					}
+					atomic.AddInt64(&e.written, hdr.Size)
+					atomic.AddInt64(&e.entries, 1)
 					return err
 				})
 			}
