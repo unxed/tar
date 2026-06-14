@@ -336,7 +336,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			return err
 		}
 
-		if !strings.HasPrefix(path, e.chroot+string(filepath.Separator)) && path != e.chroot {
+		prefix := e.chroot
+		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+			prefix += string(filepath.Separator)
+		}
+		if !strings.HasPrefix(path, prefix) && path != e.chroot {
 			return fmt.Errorf("%s cannot be extracted outside of chroot (%s)", path, e.chroot)
 		}
 
