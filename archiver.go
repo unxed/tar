@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type ArchiverOption func(*archiverOptions) error
@@ -105,6 +106,12 @@ type Archiver struct {
 	tempFilename         string
 	isTemporaryIndexPath bool
 	comment              string
+	written              int64
+	entries              int64
+}
+
+func (a *Archiver) Written() (bytes, entries int64) {
+	return atomic.LoadInt64(&a.written), atomic.LoadInt64(&a.entries)
 }
 
 // SetComment sets the global archive comment stored inside the F4SS shadow metadata index.
@@ -466,6 +473,8 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 				return err
 			}
 		}
+		atomic.AddInt64(&a.written, hdr.Size)
+		atomic.AddInt64(&a.entries, 1)
 		a.m.Unlock()
 	}
 
