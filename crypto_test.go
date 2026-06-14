@@ -16,11 +16,11 @@ func TestPBKDF2(t *testing.T) {
 	}
 }
 
-func TestF4CryptHeader_Roundtrip(t *testing.T) {
+func TestXCryptHeader_Roundtrip(t *testing.T) {
 	pass := "my_secure_password"
-	hdr1, key1, err := generateF4CryptHeader(pass, 1000) // Small iterations for fast testing
+	hdr1, key1, err := generateXCryptHeader(pass, 1000) // Small iterations for fast testing
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal(pass)
 	}
 
 	encoded := hdr1.Encode()
@@ -28,7 +28,7 @@ func TestF4CryptHeader_Roundtrip(t *testing.T) {
 		t.Fatalf("Expected header to be exactly 93 bytes, got %d", len(encoded))
 	}
 
-	hdr2, err := parseF4CryptHeader(encoded)
+	hdr2, err := parseXCryptHeader(encoded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,14 +43,14 @@ func TestF4CryptHeader_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestF4Crypt_StreamEncryptionAndRandomAccess(t *testing.T) {
+func TestXCrypt_StreamEncryptionAndRandomAccess(t *testing.T) {
 	pass := "test_password"
-	hdr, key, _ := generateF4CryptHeader(pass, 1000)
+	hdr, key, _ := generateXCryptHeader(pass, 1000)
 
 	plaintext := []byte(strings.Repeat("0123456789ABCDEF", 1000)) // 16000 bytes
 
 	var cipherBuf bytes.Buffer
-	writer, err := newF4CryptWriter(&cipherBuf, key, hdr.IV)
+	writer, err := newXCryptWriter(&cipherBuf, key, hdr.IV)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestF4Crypt_StreamEncryptionAndRandomAccess(t *testing.T) {
 
 	// Decrypt using Random Access Reader
 	readerAt := bytes.NewReader(ciphertext)
-	decReader := newF4CryptReaderAt(readerAt, key, hdr.IV)
+	decReader := newXCryptReaderAt(readerAt, key, hdr.IV)
 
 	// Test 1: Read a chunk perfectly aligned with blocks
 	buf1 := make([]byte, 32)

@@ -78,7 +78,7 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 	}
 	var ra io.ReaderAt = mvr
 
-	ra, size, err = checkF4Crypt(ra, size, options.password)
+	ra, size, err = checkXCrypt(ra, size, options.password)
 	if err != nil {
 		mvr.Close()
 		return nil, err
@@ -316,7 +316,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 	}
 	var ra io.ReaderAt = mvr
 
-	ra, size, err = checkF4Crypt(ra, size, t.password)
+	ra, size, err = checkXCrypt(ra, size, t.password)
 	if err != nil {
 		mvr.Close()
 		return nil, err

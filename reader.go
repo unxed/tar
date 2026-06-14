@@ -30,7 +30,7 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 		return nil, err
 	}
 
-	raDec, sizeDec, err := checkF4Crypt(ra, size, password)
+	raDec, sizeDec, err := checkXCrypt(ra, size, password)
 	if err != nil {
 		mvr.Close()
 		return nil, err

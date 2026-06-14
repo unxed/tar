@@ -1,7 +1,8 @@
-# f4 TAR Extensions Specification (Version 0.9)
+# f4 TAR Extensions Specification (Version 0.10)
 
 ## 1. Abstract
-The **f4 TAR Extensions** provide a set of standardized PAX headers, methodologies, and an embedded metadata and indexing format (F4SS) designed to enhance cross-platform file system fidelity and performance within standard TAR archives. These extensions were originally developed for the `unxed/tar` golang library used in [f4](https://github.com/unxed/f4) — a cross-platform, asynchronous Far Manager clone. All extensions are backward-compatible with standard TAR utilities.
+
+The **f4 TAR Extensions** provide a set of standardized PAX headers, methodologies, and an embedded metadata and indexing format (AXS) designed to enhance cross-platform file system fidelity and performance within standard TAR archives. These extensions were originally developed for the `unxed/tar` golang library used in [f4](https://github.com/unxed/f4) — a cross-platform, asynchronous Far Manager clone. All extensions are backward-compatible with standard TAR utilities.
 
 ## 2. Cross-Platform Metadata (PAX Extensions)
 
@@ -20,12 +21,12 @@ f4 extensions adopt the GNU `tar` dumpdir format (`Typeflag: 'D'`, `TypeGNUDumpD
 - **Payload:** A list of active files/directories, formatted as `[tag byte][filename]\0`, terminated by an extra `\0`.
 - **Behavior:** During extraction in incremental mode, any file present in the target directory but missing from the corresponding GNU Dumpdir manifest MUST be deleted.
 
-## 4. F4 Embedded TAR Structure (F4SS)
+## 4. Appended eXtension Stream Structure (AXS)
 
 ### 4.1. Architecture
 A standard TAR archive consists of a series of file records, ending with an end-of-archive marker (at least two consecutive 512-byte blocks filled with binary zeros). Compression utilities (like GZIP, BZIP2, or ZSTD) support concatenated independent streams.
 
-The F4SS profile organizes the archive into three consecutive streams:
+The AXS profile organizes the archive into three consecutive streams:
 
 ```text
 +----------------------------------------------------------------+
@@ -53,7 +54,7 @@ The second stream is an independent, concatenated compressed (or uncompressed) T
 To avoid namespace collisions, all metadata files and payloads inside Stream 2 MUST be placed within a reserved root-level directory named `.tarext/`.
 
 ##### Standard Payloads:
-F4SS structures metadata inside Stream 2 under a unified taxonomy representing industry-standard specifications:
+AXS structures metadata inside Stream 2 under a unified taxonomy representing industry-standard specifications:
 
 *   **`.tarext/ratarmount/index.sqlite`** or **`.tarext/ratarmount/index.arcidx`**
     *   **Description:** The filesystem metadata index mapping logical file paths to their uncompressed offsets. `index.sqlite` uses the classic SQLite schema, while `index.arcidx` uses the lightweight FlatBuffers schema (as standardized in [ratarmount#192](https://github.com/mxmlnkn/ratarmount/issues/192)).
@@ -80,7 +81,7 @@ For uncompressed `.tar` files, a 24-byte block is appended to the very end of th
 ```text
 [0:8]   - uint64 Little Endian - Compressed offset of Stream 2
 [8:16]  - uint64 Little Endian - Compressed size of Stream 2
-[16:24] - ASCII characters - "F4IDX\x00\x00\x00" signature
+[16:24] - ASCII characters - "TAREXT\x00\x00" signature
 ```
 
 #### 4.2.2. Zstandard (ZSTD) Skippable Frame
@@ -91,7 +92,7 @@ For `.tar.zst` files, a standard ZSTD skippable frame is appended to the end. Si
   - `[4:8]` - `24` (uint32 Little Endian, Frame Payload size)
   - `[8:16]` - `Compressed offset of Stream 2` (uint64 Little Endian)
   - `[16:24]` - `Compressed size of Stream 2` (uint64 Little Endian)
-  - `[24:32]` - `"F4IDX\x00\x00\x00"` (ASCII Signature)
+  - `[24:32]` - `"TAREXT\x00\x00"` (ASCII Signature)
 
 #### 4.2.3. GZIP Extra Field empty stream
 For `.tar.gz` files, a standard empty GZIP stream containing a custom `FEXTRA` subfield is appended.
@@ -102,17 +103,17 @@ For `.tar.gz` files, a standard empty GZIP stream containing a custom `FEXTRA` s
   - `[3]` - `0x04` (FEXTRA flag set)
   - `[4:10]` - MTIME, XFL, OS (set to 0)
   - `[10:12]` - `28` (uint16 Little Endian, XLEN)
-  - `[12:14]` - `'F', '4'` (ASCII Subfield ID)
+  - `[12:14]` - `'T', 'X'` (ASCII Subfield ID)
   - `[14:16]` - `24` (uint16 Little Endian, Subfield Length)
   - `[16:24]` - `Compressed offset of Stream 2` (uint64 Little Endian)
   - `[24:32]` - `Compressed size of Stream 2` (uint64 Little Endian)
-  - `[32:40]` - `"F4IDX\x00\x00\x00"` (ASCII Signature)
+  - `[32:40]` - `"TAREXT\x00\x00"` (ASCII Signature)
   - `[40:45]` - `0x01, 0x00, 0x00, 0xff, 0xff` (Valid empty DEFLATE block with BFINAL=1, BTYPE=00)
   - `[45:53]` - `CRC32=0, ISIZE=0` (uint32 Little Endian fields of the GZIP footer)
 
 ### 4.3. Raw Compression Seek Indexes
 
-To decouple filesystem metadata from the underlying compression layer, F4SS standardizes raw binary index formats stored within dedicated directories in Stream 2 or natively in Stream 1 headers.
+To decouple filesystem metadata from the underlying compression layer, AXS standardizes raw binary index formats stored within dedicated directories in Stream 2 or natively in Stream 1 headers.
 
 #### 4.3.1. Continuous GZIP Index (`.tarext/GZIDX/index.gzidx`)
 This format is binary-compatible with Mark Adler's `zran.c` and is used to index unmodified, continuously compressed GZIP streams. It stores periodic checkpoints containing the 32KB sliding window (dictionary) required to resume decompression at any arbitrary point.
@@ -154,7 +155,7 @@ An array of $P$ integers (each of size `entry_size` bytes), representing the com
 
 ### 4.4. Indexing Strategies (Continuous vs. Chunked)
 
-To support $O(1)$ random access within compressed streams, F4SS accommodates two primary strategies depending on the file container and the user's performance needs:
+To support $O(1)$ random access within compressed streams, AXS accommodates two primary strategies depending on the file container and the user's performance needs:
 
 1.  **Continuous / Stateful Indexing (e.g., GZIDX):** The archive is compressed normally to maximize the compression ratio. The index stores periodic checkpoints, which for algorithms like DEFLATE include the 32KB sliding window (dictionary) required to resume decompression at that point.
 2.  **Chunked / Flushed Indexing (dictzip style):** The compressor periodically flushes its state (e.g., using `Z_FULL_FLUSH` in zlib, or using independent frame boundaries in ZSTD) at fixed uncompressed intervals. While this slightly reduces the overall compression ratio, it allows the index to be extremely lightweight and makes seeking significantly faster.
@@ -162,61 +163,61 @@ To support $O(1)$ random access within compressed streams, F4SS accommodates two
     - **For other streams (e.g. ZSTD):** The index MUST be stored as a `.tarext/dictzip/index.dzidx` payload in Stream 2.
 
 ### 4.5. Implementation Guidelines
-- **Modifications/Updates via standard tools:** If a standard archiver appends files to the archive (e.g., using `tar -r`), it will seek to the first EOF zero blocks (end of Stream 1) and overwrite them with new file records. This inherently **destroys and overwrites** Stream 2 (metadata) and Stream 3 (Magic Footer). The archive safely reverts to a standard, non-indexed TAR file. F4-aware readers MUST validate the Magic Footer signature at the absolute end of the file; if it is missing or the physical file size does not match the footer offsets, the F4SS metadata MUST be considered destroyed.
+AXS-aware readers MUST validate the Magic Footer signature at the absolute end of the file; if it is missing or the physical file size does not match the footer offsets, the AXS metadata MUST be considered destroyed.
 
 ### 4.6. Comparison to Prior Art
 
 #### 4.6.1. dictzip Compatibility and Design
-`dictzip` pioneered random access for GZIP by forcing chunked compression and storing block sizes in the GZIP `FEXTRA` header. 
+`dictzip` pioneered random access for GZIP by forcing chunked compression and storing block sizes in the GZIP `FEXTRA` header.
 
-F4SS adopts this exact methodology. For GZIP archives, F4SS avoids inventing custom extensions, instead prioritizing native compatibility with the existing `dictzip` ecosystem. If an archive is GZIP-compressed, the `dictzip` index is embedded natively within the GZIP headers of Stream 1. 
+AXS adopts this exact methodology. For GZIP archives, AXS avoids inventing custom extensions, instead prioritizing native compatibility with the existing `dictzip` ecosystem. If an archive is GZIP-compressed, the `dictzip` index is embedded natively within the GZIP headers of Stream 1.
 
-For other formats (such as `.tar.zst`), where native `dictzip` headers are not supported by the container, F4SS replicates the `dictzip` block-size architecture within the `.tarext/dictzip/index.dzidx` file inside Stream 2. This unifies the seek mechanics across different compression formats while ensuring native utilities remain fully supported.
+For other formats (such as `.tar.zst`), where native `dictzip` headers are not supported by the container, AXS replicates the `dictzip` block-size architecture within the `.tarext/dictzip/index.dzidx` file inside Stream 2. This unifies the seek mechanics across different compression formats while ensuring native utilities remain fully supported.
 
 #### 4.6.2. Pixz (TPXZ)
 While `pixz` (parallel indexed XZ) pioneered the concept of embedding indexes for chunked compression after the TAR EOF marker, its architecture is tightly coupled to the block-based design of the XZ container format and can not be used for example with zStd.
 
-## 5. F4Crypt: Encrypted Archives (AES-256)
+## 5. XCrypt: Encrypted Archives (AES-256)
 
 ### 5.1. Abstract and Backward Compatibility
-To provide strong encryption while maintaining absolute backward compatibility with legacy TAR utilities (which lack native encryption flags), F4SS introduces the **F4Crypt** encapsulation method.
+To provide strong encryption while maintaining absolute backward compatibility with legacy TAR utilities (which lack native encryption flags), AXS introduces the **XCrypt** encapsulation method.
 
-When an archive is encrypted, the original files are hidden from legacy tools. If a user extracts an F4Crypt archive using standard `tar`, `7z`, or `WinRAR`, they will not see encrypted garbage or encounter extraction errors. Instead, the archive will cleanly extract a single plaintext stub file warning them that the archive is encrypted. 
+When an archive is encrypted, the original files are hidden from legacy tools. If a user extracts an XCrypt archive using standard `tar`, `7z`, or `WinRAR`, they will not see encrypted garbage or encounter extraction errors. Instead, the archive will cleanly extract a single plaintext stub file warning them that the archive is encrypted.
 
-F4-aware utilities will read the F4SS Magic Footer, locate the encrypted payload in Stream 2, prompt the user for a password, and seamlessly mount or extract the encapsulated files.
+f4-aware utilities will read the AXS Magic Footer, locate the encrypted payload in Stream 2, prompt the user for a password, and seamlessly mount or extract the encapsulated files.
 
 ### 5.2. Encrypted Archive Architecture
-An encrypted F4SS archive is typically stored as an **uncompressed** outer `.tar` file, structured as follows:
+An encrypted AXS archive is typically stored as an **uncompressed** outer `.tar` file, structured as follows:
 
 1. **Stream 1 (The Stub):** A valid, uncompressed TAR stream containing exactly one file.
    - **Filename:** `README_ENCRYPTED.txt` (or a similar culturally appropriate filename).
-   - **Content:** A human-readable message (e.g., *"This is an encrypted archive. Please use f4 or an F4SS-compatible tool to extract it."*).
+   - **Content:** A human-readable message (e.g., *"This is an encrypted archive. Please use f4 or an AXS-compatible tool to extract it."*).
    - Stream 1 MUST terminate with standard TAR EOF zero blocks.
 2. **Stream 2 (The Payload):** An uncompressed TAR stream containing the cryptographic headers and the AES-encrypted inner archive.
-   - All files MUST reside under `.tarext/f4crypt/`.
-3. **Stream 3 (Magic Footer):** The standard F4SS Uncompressed Magic Footer (Section 4.2.1) pointing to Stream 2.
+   - All files MUST reside under `.tarext/xcrypt/`.
+3. **Stream 3 (Magic Footer):** The standard AXS Uncompressed Magic Footer (Section 4.2.1) pointing to Stream 2.
 
-### 5.3. F4Crypt Payload Structure (Inside Stream 2)
+### 5.3. XCrypt Payload Structure (Inside Stream 2)
 Stream 2 contains the following files:
 
-*   **`.tarext/f4crypt/crypto.hdr`**
+*   **`.tarext/xcrypt/crypto.hdr`**
     *   **Description:** A raw binary file containing key derivation parameters (Salt, Iterations), the AES Nonce (IV), and the MAC tag for integrity verification.
-*   **`.tarext/f4crypt/payload.enc`**
+*   **`.tarext/xcrypt/payload.enc`**
     *   **Description:** The AES-256 encrypted byte stream of the *actual* (inner) archive. This inner archive MAY be compressed (e.g., a `.tar.gz` stream) prior to encryption.
-*   **`.tarext/f4crypt/index.*.enc` (Optional)**
-    *   **Description:** F4SS indexes (like `index.sqlite` or `index.gzidx`) MUST be encrypted using the same key and IV stream to prevent metadata leakage (such as file names, sizes, and offsets).
+*   **`.tarext/xcrypt/index.*.enc` (Optional)**
+    *   **Description:** AXS indexes (like `index.sqlite` or `index.gzidx`) MUST be encrypted using the same key and IV stream to prevent metadata leakage (such as file names, sizes, and offsets).
 
 ### 5.4. Cryptographic Primitives
-F4Crypt prioritizes random access (seeking) without sacrificing security, heavily inspired by ZIP's AE-x specification but optimized for large TAR streams.
+XCrypt prioritizes random access (seeking) without sacrificing security, heavily inspired by ZIP's AE-x specification but optimized for large TAR streams.
 
-- **Cipher:** `AES-256` in **CTR (Counter) Mode**. CTR mode transforms a block cipher into a stream cipher. This allows $O(1)$ random access decryption at any byte offset, perfectly synergizing with F4SS seek indexes (like SQLite and GZIDX).
+- **Cipher:** `AES-256` in **CTR (Counter) Mode**. CTR mode transforms a block cipher into a stream cipher. This allows $O(1)$ random access decryption at any byte offset, perfectly synergizing with AXS seek indexes (like SQLite and GZIDX).
 - **Key Derivation (KDF):** `PBKDF2-HMAC-SHA256`. Generates a 32-byte (256-bit) master key from the user's password.
 - **Authentication:** `HMAC-SHA256`. Calculated over the entire ciphertext of `payload.enc`. Archivers SHOULD verify this MAC upon full extraction. When mounting the archive via FUSE/VFS, MAC verification MAY be deferred or skipped to allow instant mounting.
 
 ### 5.5. `crypto.hdr` Binary Layout
 The `crypto.hdr` file is exactly **93 bytes** long (Little Endian):
 
-- `[0:6]`   - `"F4CRPT"` (6 bytes ASCII Signature)
+- `[0:6]`   - `"XCRYPT"` (6 bytes ASCII Signature)
 - `[6]`     - `uint8` Version (`0x01`)
 - `[7]`     - `uint8` KDF Algorithm (`0x01` = PBKDF2-HMAC-SHA256)
 - `[8]`     - `uint8` Cipher (`0x01` = AES-256-CTR)
@@ -248,7 +249,7 @@ Split volumes are stored with a standard 3-digit zero-padded suffix appended to 
 - **Reading:** F4-aware readers MUST automatically detect and open sequential volume parts if they exist. They present a unified virtual stream of the combined size.
 - **Writing:** Writers can be configured with a split threshold size. When writing, they automatically start a new volume file once the threshold is reached.
 
-## 7. Integrity and Recovery Protection (F4Recovery)
+## 7. Integrity and Recovery Protection (ARecovery)
 
 To protect archives from physical media corruption and bit rot, f4 TAR integrates standard PAR2 (Reed-Solomon) recovery blocks directly into the archive file compliantly.
 
@@ -261,15 +262,15 @@ The recovery data is appended to the absolute end of the file (or the last volum
 +----------------------------------------------------------------+
 | PAR2 Recovery Stream (Standard PAR2 packets)                   |
 +----------------------------------------------------------------+
-| 32-byte F4Recovery Magic Footer                                |
+| 32-byte ARecovery Magic Footer                                 |
 +----------------------------------------------------------------+
 ```
 
-### 7.2. F4Recovery Magic Footer Layout
+### 7.2. ARecovery Magic Footer Layout
 A 32-byte physical footer placed at the absolute end of the file:
 - `[0:8]`   - `uint64` Little Endian - Size of the PAR2 Recovery Stream
 - `[8:16]`  - `uint64` Little Endian - Original size of the archive stream (excluding recovery data)
-- `[16:32]` - ASCII string - `"F4RECOVERY\x00\x00\x00\x00\x00\x00"` signature
+- `[16:32]` - ASCII string - `"RECOVERY\x00\x00\x00\x00\x00\x00\x00\x00"` signature
 
 ### 7.3. Extraction Compatibility
 - **F4-aware Tools:** Read the 32-byte footer, locate the original archive bounds, and parse only the original archive, while ignoring/validating the recovery records.

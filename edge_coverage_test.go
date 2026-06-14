@@ -135,7 +135,7 @@ func TestRecovery_Edge(t *testing.T) {
 
 func TestCrypto_Edge(t *testing.T) {
 	// Слишком короткий заголовок
-	_, err := parseF4CryptHeader(make([]byte, 10))
+	_, err := parseXCryptHeader(make([]byte, 10))
 	if err == nil {
 		t.Errorf("expected error for short header")
 	}
@@ -143,15 +143,15 @@ func TestCrypto_Edge(t *testing.T) {
 	// Неверный Magic
 	buf := make([]byte, 93)
 	copy(buf, "WRONGC")
-	_, err = parseF4CryptHeader(buf)
+	_, err = parseXCryptHeader(buf)
 	if err == nil {
 		t.Errorf("expected error for wrong magic")
 	}
 
 	// Неподдерживаемая версия
-	copy(buf, "F4CRPT")
+	copy(buf, "XCRYPT")
 	buf[6] = 99
-	_, err = parseF4CryptHeader(buf)
+	_, err = parseXCryptHeader(buf)
 	if err == nil {
 		t.Errorf("expected error for unsupported version")
 	}
@@ -159,7 +159,7 @@ func TestCrypto_Edge(t *testing.T) {
 	// Неподдерживаемый KDF
 	buf[6] = 1
 	buf[7] = 99
-	_, err = parseF4CryptHeader(buf)
+	_, err = parseXCryptHeader(buf)
 	if err == nil {
 		t.Errorf("expected error for unsupported KDF")
 	}
@@ -167,7 +167,7 @@ func TestCrypto_Edge(t *testing.T) {
 	// Неподдерживаемый Cipher
 	buf[7] = 1
 	buf[8] = 99
-	_, err = parseF4CryptHeader(buf)
+	_, err = parseXCryptHeader(buf)
 	if err == nil {
 		t.Errorf("expected error for unsupported Cipher")
 	}

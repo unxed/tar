@@ -335,7 +335,7 @@ func (a *Archiver) closeInternal() error {
 func (a *Archiver) Close() error {
 	err := a.closeInternal()
 	if a.options.password != "" {
-		encErr := encapsulateF4Crypt(a.finalFilename, a.tempFilename, a.options.password)
+		encErr := encapsulateXCrypt(a.finalFilename, a.tempFilename, a.options.password)
 		os.Remove(a.tempFilename)
 		if err == nil {
 			err = encErr
