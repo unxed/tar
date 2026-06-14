@@ -54,6 +54,10 @@ func WithWriterSplitSize(size int64) WriterOption {
 	}
 }
 
+type stdoutWrapper struct{ *os.File }
+
+func (stdoutWrapper) Close() error { return nil }
+
 func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteCloser, error) {
 	var wopts writerOptions
 	for _, o := range opts {
@@ -64,6 +68,8 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 	var err error
 	if wopts.splitSize > 0 {
 		f, err = NewMultiVolumeWriter(name, wopts.splitSize)
+	} else if name == "-" {
+		f = stdoutWrapper{os.Stdout}
 	} else {
 		f, err = os.Create(name)
 	}

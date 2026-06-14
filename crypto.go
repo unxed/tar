@@ -232,13 +232,21 @@ func (cr *xCryptReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	}
 
 	return copied, err
-}// encapsulateF4Crypt wraps the temp archive in a standard F4Crypt outer layer.
+}
+
+// encapsulateF4Crypt wraps the temp archive in a standard F4Crypt outer layer.
 func encapsulateXCrypt(finalPath, tempPath, password string) error {
-	out, err := os.Create(finalPath)
-	if err != nil {
-		return err
+	var out *os.File
+	var err error
+	if finalPath == "-" {
+		out = os.Stdout
+	} else {
+		out, err = os.Create(finalPath)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
 	}
-	defer out.Close()
 
 	// Stream 1: Plaintext Stub
 	stubTar := NewWriter(out)
