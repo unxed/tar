@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -199,7 +198,7 @@ func TestUnixLinks(t *testing.T) {
 	}
 }
 
-func TestArchiver_ChrootViolation(t *testing.T) {
+func TestArchiver_OutsideChrootNormalization(t *testing.T) {
 	tmpDir := t.TempDir()
 	chroot := filepath.Join(tmpDir, "chroot")
 	os.MkdirAll(chroot, 0755)
@@ -212,7 +211,6 @@ func TestArchiver_ChrootViolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
 
 	fi, err := os.Stat(outsideFile)
 	if err != nil {
@@ -224,11 +222,10 @@ func TestArchiver_ChrootViolation(t *testing.T) {
 	}
 
 	err = a.Archive(context.Background(), files)
-	if err == nil {
-		t.Error("Expected error when archiving file outside chroot, got nil")
-	} else if !strings.Contains(err.Error(), "cannot be archived from outside of chroot") {
-		t.Errorf("Unexpected error: %v", err)
+	if err != nil {
+		t.Fatalf("Expected successful archive with normalized path, got: %v", err)
 	}
+	a.Close()
 }
 
 

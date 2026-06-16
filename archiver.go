@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -398,17 +397,14 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 			return err
 		}
 
-		prefix := a.options.chroot
-		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-			prefix += string(filepath.Separator)
-		}
-		if !strings.HasPrefix(path, prefix) && path != a.options.chroot {
-			return fmt.Errorf("%s cannot be archived from outside of chroot (%s)", name, a.options.chroot)
-		}
-
 		rel, err := filepath.Rel(a.options.chroot, path)
-		if err != nil {
-			return err
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			rel = filepath.ToSlash(path)
+			vol := filepath.VolumeName(path)
+			if vol != "" {
+				rel = strings.TrimPrefix(rel, filepath.ToSlash(vol))
+			}
+			rel = strings.TrimPrefix(rel, "/")
 		}
 		if rel == "." {
 			continue // Skip root
