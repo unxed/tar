@@ -21,7 +21,7 @@ type TarFS struct {
 	IndexPath        string
 	Index            *Index
 	method           uint16
-	xzBlocks         []BlockOffset
+	xzBlocks         []xz.Block
 	closer           io.Closer
 	isTemporaryIndex bool
 	password         string
@@ -114,9 +114,9 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		return nil, err
 	}
 
-	var xzBlocks []BlockOffset
+	var xzBlocks []xz.Block
 	if method == XZ {
-		xzBlocks, _ = parseXZIndex(ra, size)
+		xzBlocks, _ = xz.ParseBlocks(ra, size)
 	}
 
 	return &TarFS{
@@ -195,6 +195,23 @@ func GetStandardIndexPath(archivePath string) (string, error) {
 	return filepath.Join(cacheDir, cleanName+".sqlite"), nil
 }
 
+func (t *TarFS) Close() error {
+	var err1, err2 error
+	err1 = t.Index.Close()
+	if t.closer != nil {
+		err2 = t.closer.Close()
+	}
+
+	if t.isTemporaryIndex {
+		os.Remove(t.IndexPath)
+	}
+
+	if err1 != nil {
+		return err1
+	}
+	return err2
+}
+// Deprecated: Retained for testing compatibility (e.g. edge_coverage_test)
 func readVLI(r io.Reader) (uint64, error) {
 	var v uint64
 	var shift uint
@@ -215,6 +232,7 @@ func readVLI(r io.Reader) (uint64, error) {
 	return v, nil
 }
 
+// Deprecated: Retained for testing compatibility (e.g. edge_coverage_test)
 func parseXZIndex(r io.ReaderAt, fileSize int64) ([]BlockOffset, error) {
 	if fileSize < 24 {
 		return nil, errors.New("tar: file too small for XZ index")
@@ -273,23 +291,6 @@ func parseXZIndex(r io.ReaderAt, fileSize int64) ([]BlockOffset, error) {
 	}
 
 	return offsets, nil
-}
-
-func (t *TarFS) Close() error {
-	var err1, err2 error
-	err1 = t.Index.Close()
-	if t.closer != nil {
-		err2 = t.closer.Close()
-	}
-
-	if t.isTemporaryIndex {
-		os.Remove(t.IndexPath)
-	}
-
-	if err1 != nil {
-		return err1
-	}
-	return err2
 }
 
 func (t *TarFS) RecursiveSize(name string) (int64, error) {
@@ -354,47 +355,25 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 
 	// O(1) Fast path: XZ native index block lookup
 	if t.method == XZ && len(t.xzBlocks) > 0 {
-		var best *BlockOffset
-		for i := range t.xzBlocks {
-			if t.xzBlocks[i].DataOffset <= targetOffset {
-				if best == nil || t.xzBlocks[i].DataOffset > best.DataOffset {
-					best = &t.xzBlocks[i]
-				}
-			}
+		mr := &xzMultiBlockReader{
+			ra:           ra,
+			blocks:       t.xzBlocks,
+			targetOffset: targetOffset,
+			size:         targetOffset + node.Size,
 		}
 
-		if best != nil {
-			var header [12]byte
-			_, err = ra.ReadAt(header[:], 0)
-			if err == nil {
-				sr := io.NewSectionReader(ra, best.BlockOffset, 1<<63-1)
-				mr := io.MultiReader(bytes.NewReader(header[:]), sr)
-				xr, err := xz.NewReader(mr)
-				if err == nil {
-					dcomp = io.NopCloser(xr)
-					remaining := targetOffset - best.DataOffset
-					if remaining > 0 {
-						if _, err := io.CopyN(io.Discard, dcomp, remaining); err != nil && err != io.EOF {
-							dcomp.Close()
-							mvr.Close()
-							return nil, err
-						}
-					}
-
-					if node.IsSparse {
-						tr := NewReader(dcomp)
-						if _, err := tr.Next(); err != nil {
-							dcomp.Close()
-							mvr.Close()
-							return nil, err
-						}
-						return &tarFile{node: node, r: tr, c: multiCloser{dcomp, mvr}}, nil
-					}
-					lr := io.LimitReader(dcomp, node.Size)
-					return &tarFile{node: node, r: lr, c: multiCloser{dcomp, mvr}}, nil
-				}
+		if node.IsSparse {
+			tr := NewReader(mr)
+			if _, err := tr.Next(); err != nil {
+				mr.Close()
+				mvr.Close()
+				return nil, err
 			}
+			return &tarFile{node: node, r: tr, c: multiCloser{mr, mvr}}, nil
 		}
+
+		lr := io.LimitReader(mr, node.Size)
+		return &tarFile{node: node, r: lr, c: multiCloser{mr, mvr}}, nil
 	}
 
 	// O(1) Fast path: ZSTD / BZIP2 block offset lookup
@@ -511,6 +490,87 @@ func (mc multiCloser) Close() error {
 		}
 	}
 	return firstErr
+}
+type xzMultiBlockReader struct {
+	ra           io.ReaderAt
+	blocks       []xz.Block
+	targetOffset int64
+	size         int64
+	currBlockIdx int
+	currReader   io.Reader
+	currCloser   io.Closer
+}
+
+func (mr *xzMultiBlockReader) Read(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	for n == 0 {
+		if mr.targetOffset >= mr.size {
+			return 0, io.EOF
+		}
+
+		if mr.currReader == nil {
+			// Find the block containing mr.targetOffset
+			idx := -1
+			for i := range mr.blocks {
+				if mr.blocks[i].UncompressedOffset <= mr.targetOffset &&
+					mr.targetOffset < mr.blocks[i].UncompressedOffset+mr.blocks[i].UncompressedSize {
+					idx = i
+					break
+				}
+			}
+			if idx == -1 {
+				return 0, io.EOF
+			}
+			mr.currBlockIdx = idx
+			b := &mr.blocks[idx]
+
+			sr := io.NewSectionReader(mr.ra, b.Offset, b.CompressedSize)
+			cfg := xz.ReaderConfig{}
+			xr, err := cfg.NewBlockReader(sr, b.StreamFlags)
+			if err != nil {
+				return 0, err
+			}
+			mr.currReader = xr
+			if closer, ok := xr.(io.Closer); ok {
+				mr.currCloser = closer
+			}
+
+			remaining := mr.targetOffset - b.UncompressedOffset
+			if remaining > 0 {
+				if _, err := io.CopyN(io.Discard, mr.currReader, remaining); err != nil && err != io.EOF {
+					return 0, err
+				}
+			}
+		}
+
+		n, err = mr.currReader.Read(p)
+		mr.targetOffset += int64(n)
+
+		if err == io.EOF {
+			if mr.currCloser != nil {
+				mr.currCloser.Close()
+				mr.currCloser = nil
+			}
+			mr.currReader = nil
+			if mr.targetOffset < mr.size {
+				err = nil
+			}
+		}
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+func (mr *xzMultiBlockReader) Close() error {
+	if mr.currCloser != nil {
+		return mr.currCloser.Close()
+	}
+	return nil
 }
 
 // -- fs.FileInfo / fs.DirEntry Implementation
