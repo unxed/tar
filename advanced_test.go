@@ -782,3 +782,45 @@ func TestExportDZIDX_EdgeCases(t *testing.T) {
 		t.Errorf("Expected DZIDX header to be at least 32 bytes, got %d", len(res2))
 	}
 }
+type tarMockFileInfo struct {
+	name string
+	mode os.FileMode
+}
+func (m tarMockFileInfo) Name() string { return m.name }
+func (m tarMockFileInfo) Size() int64 { return 0 }
+func (m tarMockFileInfo) Mode() os.FileMode { return m.mode }
+func (m tarMockFileInfo) ModTime() time.Time { return time.Now() }
+func (m tarMockFileInfo) IsDir() bool { return m.mode.IsDir() }
+func (m tarMockFileInfo) Sys() interface{} { return nil }
+
+func TestArchiver_DifferentDrivesWindows_Tar(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+
+	tmp := t.TempDir()
+	archivePath := filepath.Join(tmp, "different_drives.tar")
+
+	currentDrive := filepath.VolumeName(tmp)
+	targetDrive := "D:"
+	if currentDrive == "D:" || currentDrive == "d:" {
+		targetDrive = "C:"
+	}
+
+	targetPath := targetDrive + `\dummy_dir`
+
+	a, err := NewArchiver(archivePath, tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	files := map[string]os.FileInfo{
+		targetPath: tarMockFileInfo{name: "dummy_dir", mode: os.ModeDir | 0755},
+	}
+
+	err = a.Archive(context.Background(), files)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+}

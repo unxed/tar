@@ -405,6 +405,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 				rel = strings.TrimPrefix(rel, filepath.ToSlash(vol))
 			}
 			rel = strings.TrimPrefix(rel, "/")
+			err = nil
 		}
 		if rel == "." {
 			continue // Skip root
