@@ -498,6 +498,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 				a.m.Unlock()
 				return err
 			}
+			// CopyBuffer гарантирует использование нашего 1МБ окна
 			_, err = io.CopyBuffer(a.wc, f, copyBuf)
 			f.Close()
 			if err != nil {

@@ -4,6 +4,7 @@ import (
     "bytes"
 	"encoding/binary"
 	"io"
+    "bufio"
 	"strings"
 )
 
@@ -164,7 +165,9 @@ func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName
 		rd = dcomp
 	}
 
-	tr := NewReader(rd)
+	// ОПТИМИЗАЦИЯ: Буферизируем чтение теневого потока метаданных (F4SS)
+	bufferedRd := bufio.NewReaderSize(rd, 1024*1024)
+	tr := NewReader(bufferedRd)
 	var payload []byte
 	copyBuf := make([]byte, 1024*1024)
 
