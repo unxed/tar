@@ -189,7 +189,7 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 	if targetStart != -1 && targetEnd != -1 {
 		removeSize := targetEnd - targetStart
 		if targetEnd < endOfArchive {
-			const chunkBufSize = 32 * 1024
+			const chunkBufSize = 2 * 1024 * 1024 // 2MB для быстрого сдвига данных
 			buffer := make([]byte, chunkBufSize)
 			rp := targetEnd
 			wp := targetStart

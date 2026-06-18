@@ -92,7 +92,7 @@ func WithExtractorSparse(b bool) ExtractorOption {
 
 var sparseBufPool = sync.Pool{
 	New: func() any {
-		return make([]byte, 32*1024)
+		return make([]byte, 1024*1024) // 1MB chunk for faster sparse operations
 	},
 }
 
@@ -109,7 +109,7 @@ func isAllZeros(p []byte) bool {
 
 func copySparseBytes(dst *os.File, data []byte) error {
 	var offset int
-	blockSize := 32 * 1024
+	blockSize := 256 * 1024 // 256KB optimal size for in-memory zero checking
 	for offset < len(data) {
 		end := offset + blockSize
 		if end > len(data) {
