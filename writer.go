@@ -2,7 +2,6 @@ package tar
 
 import (
 	"archive/tar"
-    "bufio"
 	"io"
 	"os"
 	"github.com/ulikunitz/xz"
@@ -78,9 +77,9 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 		return nil, err
 	}
 
-	// Буферизируем вывод на уровне файла. 2МБ — оптимально для Windows/NTFS.
-	bufOut := bufio.NewWriterSize(f, 2*1024*1024)
-	compTracker := &trackingWriter{w: bufOut}
+	// Убираем bufio! Он ломает trackingWriter.pos, что ведет
+	// к созданию битых индексов.
+	compTracker := &trackingWriter{w: f}
 	var wr io.Writer = compTracker
 	var comp io.WriteCloser
 
@@ -263,12 +262,7 @@ func (wc *WriteCloser) Close() error {
 		err2 = wc.comp.Close()
 	}
 
-	// Сбрасываем буфер, чтобы все данные гарантированно ушли в `wc.f`
-	if bw, ok := wc.compTracker.w.(*bufio.Writer); ok {
-		if err := bw.Flush(); err != nil && err3 == nil {
-			err3 = err
-		}
-	}
+	// Буфер bufio удален, Flush больше не требуется.
 
 	if wc.f != nil {
 		if err := wc.f.Close(); err != nil && err3 == nil {

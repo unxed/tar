@@ -345,11 +345,7 @@ func (a *Archiver) closeInternal() error {
 		shadowComp.Close()
 	}
 
-	// Сбрасываем буфер еще раз, потому что shadowTar записал индекс
-	// и метаданные в bufio. Без этого Flush данные потеряются при закрытии файла.
-	if bw, ok := a.wc.compTracker.w.(*bufio.Writer); ok {
-		bw.Flush()
-	}
+	// Буфер bufio удален, Flush больше не требуется.
 
 	shadowSize := a.wc.compTracker.pos - shadowStartOffset
 	err = WriteMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)

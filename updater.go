@@ -105,9 +105,6 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 	var tw *tar.Writer
 	var comp io.WriteCloser
 
-	// Используем буферизацию и в апдейтере для скорости на NTFS
-	bufOut := bufio.NewWriterSize(f, 2*1024*1024)
-
 	if isCompressed {
 		// Initialize the appropriate compressor starting from truncated position
 		ci, ok := compressors.Load(method)
@@ -115,13 +112,13 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 			return nil, ErrAlgorithm
 		}
 		var err error
-		comp, err = ci.(Compressor)(bufOut)
+		comp, err = ci.(Compressor)(f)
 		if err != nil {
 			return nil, err
 		}
 		tw = tar.NewWriter(comp)
 	} else {
-		tw = tar.NewWriter(bufOut)
+		tw = tar.NewWriter(f)
 	}
 
 	return &Updater{
@@ -131,7 +128,6 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 		isCompressed: isCompressed,
 		compMethod:   method,
 		shadowStart:  shadowStart,
-		buf:          bufOut,
 	}, nil
 }
 
@@ -266,10 +262,6 @@ func (u *Updater) Close() error {
 			if err == nil { err = cerr }
 		}
 	}
-	if u.buf != nil {
-		if berr := u.buf.Flush(); berr != nil {
-			if err == nil { err = berr }
-		}
-	}
+	// Буфер удален.
 	return err
 }
