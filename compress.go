@@ -108,7 +108,7 @@ type gzipIndexTrackingReader struct {
 }
 
 func newGzipIndexTrackingReader(r io.Reader) (*gzipIndexTrackingReader, error) {
-	br := bufio.NewReader(r)
+	br := bufio.NewReaderSize(r, 1024*1024) // 1MB buffer instead of default 4KB
 	tr := &trackingByteReader{r: br}
 	gtr := &gzipIndexTrackingReader{
 		tr:      tr,
@@ -408,7 +408,7 @@ func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOff
 
 	seekOffset := int64(best.compOffset)
 	sr := io.NewSectionReader(r, seekOffset, 1<<63-1)
-	br := bufio.NewReader(sr)
+	br := bufio.NewReaderSize(sr, 1024*1024) // 1MB buffer instead of default 4KB
 
 	if best.hasData == 0 {
 		gr, err := gzip.NewReader(br)
@@ -482,10 +482,29 @@ func init() {
 	compressors.Store(XZ, Compressor(func(w io.Writer) (io.WriteCloser, error) { return xz.NewWriter(w) }))
 	decompressors.Store(XZ, xzFormat{})
 
+	var zstdWriterPool sync.Pool
 	compressors.Store(ZSTD, Compressor(func(w io.Writer) (io.WriteCloser, error) {
-		return zstd.NewWriter(w, zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
+		var enc *zstd.Encoder
+		if v := zstdWriterPool.Get(); v != nil {
+			enc = v.(*zstd.Encoder)
+			enc.Reset(w)
+		} else {
+			enc, _ = zstd.NewWriter(w, zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
+		}
+		return &pooledZstdWriter{Encoder: enc, pool: &zstdWriterPool}, nil
 	}))
 	decompressors.Store(ZSTD, zstdFormat{})
+}
+
+type pooledZstdWriter struct {
+	*zstd.Encoder
+	pool *sync.Pool
+}
+
+func (p *pooledZstdWriter) Close() error {
+	err := p.Encoder.Close()
+	p.pool.Put(p.Encoder)
+	return err
 }
 
 func RegisterCompressor(method uint16, comp Compressor) {

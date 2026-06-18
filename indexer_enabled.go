@@ -4,6 +4,7 @@ package tar
 import (
 	"archive/tar"
 	"io"
+    "bufio"
 	"os"
 	"unicode/utf8"
 	"encoding/base64"
@@ -25,7 +26,11 @@ func IndexArchive(archivePath, indexPath string) error {
 		defer dcomp.Close()
 		rd = dcomp
 	}
-	tr := &trackingReader{r: rd}
+
+	// ОПТИМИЗАЦИЯ: Буферизируем поток перед передачей в TAR-индексатор.
+	// Без этого индексатор будет читать заголовки файлов (512 байт) напрямую из декомпрессора.
+	bufferedRd := bufio.NewReaderSize(rd, 1024*1024)
+	tr := &trackingReader{r: bufferedRd}
 	trd := tar.NewReader(tr)
 	os.Remove(indexPath)
 	idx, err := OpenIndex(indexPath)

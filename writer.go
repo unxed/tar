@@ -77,6 +77,8 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 		return nil, err
 	}
 
+	// Убираем bufio! Он ломает trackingWriter.pos, что ведет
+	// к созданию битых индексов.
 	compTracker := &trackingWriter{w: f}
 	var wr io.Writer = compTracker
 	var comp io.WriteCloser
@@ -232,9 +234,6 @@ func (wc *WriteCloser) createSeekPoint() {
 }
 
 func (wc *WriteCloser) Close() error {
-	// If embedded index is enabled, Close is handled entirely by Archiver.Close
-	// to allow starting a new shadow stream. WriteCloser.Close() should only
-	// do the standard cleanup when used standalone.
 	var err1, err2, err3 error
 	err1 = wc.Writer.Close()
 
@@ -262,14 +261,15 @@ func (wc *WriteCloser) Close() error {
 	if wc.comp != nil {
 		err2 = wc.comp.Close()
 	}
+
+	// Буфер bufio удален, Flush больше не требуется.
+
 	if wc.f != nil {
-		err3 = wc.f.Close()
+		if err := wc.f.Close(); err != nil && err3 == nil {
+			err3 = err
+		}
 	}
-	if err1 != nil {
-		return err1
-	}
-	if err2 != nil {
-		return err2
-	}
+	if err1 != nil { return err1 }
+	if err2 != nil { return err2 }
 	return err3
 }

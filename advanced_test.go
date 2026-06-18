@@ -471,11 +471,13 @@ func TestExtractor_LargeFileHybrid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write dummy data in chunks efficiently
-	chunk := bytes.Repeat([]byte("A"), 1024*1024)
-	for i := 0; i < 17; i++ {
-		tw.Write(chunk)
-	}
+			// Write dummy data in chunks efficiently
+			chunk := bytes.Repeat([]byte("A"), 1024*1024)
+			for i := 0; i < 17; i++ {
+				if _, err := tw.Write(chunk); err != nil {
+					t.Fatal(err)
+				}
+			}
 	tw.Close()
 	f.Close()
 

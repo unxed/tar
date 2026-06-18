@@ -1,7 +1,7 @@
 package tar
 
 import (
-	"bytes"
+    "bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -92,7 +92,7 @@ func WithExtractorSparse(b bool) ExtractorOption {
 
 var sparseBufPool = sync.Pool{
 	New: func() any {
-		return make([]byte, 32*1024)
+		return make([]byte, 1024*1024) // 1MB chunk for faster sparse operations
 	},
 }
 
@@ -109,7 +109,7 @@ func isAllZeros(p []byte) bool {
 
 func copySparseBytes(dst *os.File, data []byte) error {
 	var offset int
-	blockSize := 32 * 1024
+	blockSize := 256 * 1024 // 256KB optimal size for in-memory zero checking
 	for offset < len(data) {
 		end := offset + blockSize
 		if end > len(data) {
@@ -410,7 +410,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					}
 				}
 			} else if hdr.Size > 0 {
-				io.Copy(io.Discard, e.rc) // Discard if not in incremental mode
+				io.CopyBuffer(io.Discard, e.rc, make([]byte, 1024*1024))
 			}
 			continue
 
@@ -428,7 +428,10 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				return err
 			}
 			if hdr.Size > 0 {
-				_, err = io.Copy(f, e.rc)
+				bufInterface := sparseBufPool.Get()
+				buf := bufInterface.([]byte)
+				_, err = io.CopyBuffer(f, e.rc, buf)
+				sparseBufPool.Put(bufInterface)
 			}
 			f.Close()
 			if err != nil {
@@ -601,7 +604,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					if err := preallocate(f, hdr.Size); err != nil {
 						return err
 					}
-					_, err = io.Copy(f, r)
+					// Переиспользуем наш гигантский 1МБ пул буферов вместо дефолтных 32КБ
+					bufInterface := sparseBufPool.Get()
+					buf := bufInterface.([]byte)
+					_, err = io.CopyBuffer(f, r, buf)
+					sparseBufPool.Put(bufInterface)
 				}
 				if err != nil {
 					return err

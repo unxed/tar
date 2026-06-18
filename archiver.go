@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"io"
+    "bufio"
 	"os"
 	"path/filepath"
 	"sort"
@@ -234,6 +235,12 @@ func (a *Archiver) closeInternal() error {
 		a.wc.comp.Close()
 	}
 
+	// Сбрасываем буфер перед тем, как определять позицию shadowStartOffset.
+	// Это ВАЖНО, чтобы `a.wc.compTracker.pos` соответствовал физической позиции в файле.
+	if bw, ok := a.wc.compTracker.w.(*bufio.Writer); ok {
+		bw.Flush()
+	}
+
 	idx.Close()
 
 	// Read the generated SQLite index into memory
@@ -338,6 +345,8 @@ func (a *Archiver) closeInternal() error {
 		shadowComp.Close()
 	}
 
+	// Буфер bufio удален, Flush больше не требуется.
+
 	shadowSize := a.wc.compTracker.pos - shadowStartOffset
 	err = WriteMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)
 	if err != nil {
@@ -395,6 +404,9 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 	}
 	sort.Strings(names)
 
+	// Выделяем 1МБ буфер для копирования данных, чтобы избежать дефолтных 32КБ в io.Copy
+	copyBuf := make([]byte, 1024*1024)
+
 	for _, name := range names {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -407,7 +419,6 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		}
 
 		var rel string
-		var err error
 		if a.options.pathMapping != nil && a.options.pathMapping[path] != "" {
 			rel = a.options.pathMapping[path]
 			err = nil
@@ -483,7 +494,8 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 				a.m.Unlock()
 				return err
 			}
-			_, err = io.Copy(a.wc, f)
+			// CopyBuffer гарантирует использование нашего 1МБ окна
+			_, err = io.CopyBuffer(a.wc, f, copyBuf)
 			f.Close()
 			if err != nil {
 				a.m.Unlock()

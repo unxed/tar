@@ -2,6 +2,7 @@ package tar
 
 import (
 	"archive/tar"
+    "bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -23,6 +24,7 @@ type Updater struct {
 	isCompressed bool
 	compMethod   uint16
 	shadowStart  int64
+	buf          *bufio.Writer
 }
 
 // NewUpdater opens a .tar or compressed .tar file for appending.
@@ -102,6 +104,7 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 
 	var tw *tar.Writer
 	var comp io.WriteCloser
+
 	if isCompressed {
 		// Initialize the appropriate compressor starting from truncated position
 		ci, ok := compressors.Load(method)
@@ -130,6 +133,15 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 
 // Append creates a new file entry in the archive.
 func (u *Updater) Append(name string, size int64, data []byte) error {
+	var r io.Reader
+	if len(data) > 0 {
+		r = bytes.NewReader(data)
+	}
+	return u.AppendReader(name, size, r)
+}
+
+// AppendReader creates a new file entry in the archive from an io.Reader stream.
+func (u *Updater) AppendReader(name string, size int64, r io.Reader) error {
 	println("[DIAG-UPD] Append: Starting append for", name, "size=", size)
 
 	stat, err := u.f.Stat()
@@ -182,7 +194,7 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 	if targetStart != -1 && targetEnd != -1 {
 		removeSize := targetEnd - targetStart
 		if targetEnd < endOfArchive {
-			const chunkBufSize = 32 * 1024
+			const chunkBufSize = 2 * 1024 * 1024 // 2MB для быстрого сдвига данных
 			buffer := make([]byte, chunkBufSize)
 			rp := targetEnd
 			wp := targetStart
@@ -229,9 +241,9 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 		println("[DIAG-UPD] Append: WriteHeader failed:", err.Error())
 		return err
 	}
-	if len(data) > 0 {
-		println("[DIAG-UPD] Append: Writing content size=", len(data))
-		if _, err := u.tw.Write(data); err != nil {
+	if r != nil {
+		println("[DIAG-UPD] Append: Writing content size=", size)
+		if _, err := io.CopyBuffer(u.tw, r, make([]byte, 1024*1024)); err != nil {
 			println("[DIAG-UPD] Append: Write content failed:", err.Error())
 			return err
 		}
@@ -241,13 +253,15 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 }
 
 func (u *Updater) Close() error {
-	err := u.tw.Close()
+	var err error
+	if u.tw != nil {
+		err = u.tw.Close()
+	}
 	if u.comp != nil {
 		if cerr := u.comp.Close(); cerr != nil {
-			if err == nil {
-				err = cerr
-			}
+			if err == nil { err = cerr }
 		}
 	}
+	// Буфер удален.
 	return err
 }
