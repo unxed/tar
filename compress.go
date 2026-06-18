@@ -108,7 +108,7 @@ type gzipIndexTrackingReader struct {
 }
 
 func newGzipIndexTrackingReader(r io.Reader) (*gzipIndexTrackingReader, error) {
-	br := bufio.NewReader(r)
+	br := bufio.NewReaderSize(r, 1024*1024) // 1MB buffer instead of default 4KB
 	tr := &trackingByteReader{r: br}
 	gtr := &gzipIndexTrackingReader{
 		tr:      tr,
@@ -408,7 +408,7 @@ func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOff
 
 	seekOffset := int64(best.compOffset)
 	sr := io.NewSectionReader(r, seekOffset, 1<<63-1)
-	br := bufio.NewReader(sr)
+	br := bufio.NewReaderSize(sr, 1024*1024) // 1MB buffer instead of default 4KB
 
 	if best.hasData == 0 {
 		gr, err := gzip.NewReader(br)

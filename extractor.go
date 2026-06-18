@@ -601,7 +601,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					if err := preallocate(f, hdr.Size); err != nil {
 						return err
 					}
-					_, err = io.Copy(f, r)
+					// Переиспользуем наш гигантский 1МБ пул буферов вместо дефолтных 32КБ
+					bufInterface := sparseBufPool.Get()
+					buf := bufInterface.([]byte)
+					_, err = io.CopyBuffer(f, r, buf)
+					sparseBufPool.Put(bufInterface)
 				}
 				if err != nil {
 					return err

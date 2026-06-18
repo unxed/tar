@@ -408,6 +408,9 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 	}
 	sort.Strings(names)
 
+	// Выделяем 1МБ буфер для копирования данных, чтобы избежать дефолтных 32КБ в io.Copy
+	copyBuf := make([]byte, 1024*1024)
+
 	for _, name := range names {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -495,7 +498,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 				a.m.Unlock()
 				return err
 			}
-			_, err = io.Copy(a.wc, f)
+			_, err = io.CopyBuffer(a.wc, f, copyBuf)
 			f.Close()
 			if err != nil {
 				a.m.Unlock()
