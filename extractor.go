@@ -1,7 +1,7 @@
 package tar
 
 import (
-    "bytes"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -276,6 +277,11 @@ func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor,
 			maxDecompressionRatio: 500, // 500:1 is a safe default for most data
 			xattrs:                true,
 			chownErrorHandler: func(name string, err error) error {
+				if pe, ok := err.(*os.PathError); ok {
+					if errno, ok := pe.Err.(syscall.Errno); ok && errno == syscall.EPERM {
+						return nil
+					}
+				}
 				fmt.Fprintf(os.Stderr, "tar: %s: %v (continuing)\n", name, err)
 				return nil
 			},
