@@ -407,7 +407,6 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		}
 
 		var rel string
-		var err error
 		if a.options.pathMapping != nil && a.options.pathMapping[path] != "" {
 			rel = a.options.pathMapping[path]
 			err = nil
