@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"bytes"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/embed"
 )
 
 type Index struct {
@@ -15,7 +16,7 @@ type Index struct {
 }
 
 func OpenIndex(dsn string) (*Index, error) {
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -44,15 +45,13 @@ func OpenIndex(dsn string) (*Index, error) {
 	CREATE TABLE IF NOT EXISTS xattrs (
 		"offsetheader" INTEGER,
 		"key"          TEXT,
-		"value"        BLOB,
-		FOREIGN KEY(offsetheader) REFERENCES files(offsetheader) ON DELETE CASCADE
+		"value"        BLOB
 	);
 	CREATE INDEX IF NOT EXISTS xattrs_offsetheader_index ON xattrs(offsetheader);
 
 	CREATE TABLE IF NOT EXISTS acls (
 		"offsetheader" INTEGER,
-		"acl"          BLOB,
-		FOREIGN KEY(offsetheader) REFERENCES files(offsetheader) ON DELETE CASCADE
+		"acl"          BLOB
 	);
 	CREATE INDEX IF NOT EXISTS acls_offsetheader_index ON acls(offsetheader);
 

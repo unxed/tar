@@ -7,7 +7,8 @@ import (
 	"sort"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/embed"
 )
 
 // MockFlatBufferIndex simulates a zero-copy memory-mapped FlatBuffer structure
@@ -53,7 +54,7 @@ type MockFileNode struct {
 }
 
 func setupSQLiteDB(b testing.TB, numFiles int) *sql.DB {
-	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	db, err := sql.Open("sqlite3", "file::memory:?cache=shared")
 	if err != nil {
 		b.Fatal(err)
 	}
