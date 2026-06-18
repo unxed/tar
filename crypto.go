@@ -1,7 +1,6 @@
 package tar
 
 import (
-    "os"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -11,6 +10,8 @@ import (
 	"errors"
 	"hash"
 	"io"
+	"os"
+	"sync"
 )
 
 // XCryptHeader represents the 93-byte binary header for encrypted streams
@@ -153,6 +154,7 @@ func addIV(baseIV []byte, offset uint64) []byte {
 
 // f4CryptWriter encrypts data on the fly and calculates the MAC of the ciphertext
 type xCryptWriter struct {
+	mu     sync.Mutex
 	w      io.Writer
 	stream cipher.Stream
 	mac    hash.Hash
@@ -175,6 +177,8 @@ func newXCryptWriter(w io.Writer, key, iv []byte) (*xCryptWriter, error) {
 }
 
 func (cw *xCryptWriter) Write(p []byte) (int, error) {
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
 	// Переиспользуем буфер, чтобы избежать аллокации (например, 2 МБ) на каждую запись
 	if cap(cw.buf) < len(p) {
 		cw.buf = make([]byte, len(p))
