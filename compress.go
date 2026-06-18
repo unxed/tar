@@ -482,10 +482,29 @@ func init() {
 	compressors.Store(XZ, Compressor(func(w io.Writer) (io.WriteCloser, error) { return xz.NewWriter(w) }))
 	decompressors.Store(XZ, xzFormat{})
 
+	var zstdWriterPool sync.Pool
 	compressors.Store(ZSTD, Compressor(func(w io.Writer) (io.WriteCloser, error) {
-		return zstd.NewWriter(w, zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
+		var enc *zstd.Encoder
+		if v := zstdWriterPool.Get(); v != nil {
+			enc = v.(*zstd.Encoder)
+			enc.Reset(w)
+		} else {
+			enc, _ = zstd.NewWriter(w, zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
+		}
+		return &pooledZstdWriter{Encoder: enc, pool: &zstdWriterPool}, nil
 	}))
 	decompressors.Store(ZSTD, zstdFormat{})
+}
+
+type pooledZstdWriter struct {
+	*zstd.Encoder
+	pool *sync.Pool
+}
+
+func (p *pooledZstdWriter) Close() error {
+	err := p.Encoder.Close()
+	p.pool.Put(p.Encoder)
+	return err
 }
 
 func RegisterCompressor(method uint16, comp Compressor) {
