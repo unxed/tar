@@ -22,6 +22,10 @@ func OpenIndex(dsn string) (*Index, error) {
 	}
 
 	_, err = db.Exec(`
+	PRAGMA journal_mode = WAL;
+	PRAGMA synchronous = NORMAL;
+	PRAGMA temp_store = MEMORY;
+
 	CREATE TABLE IF NOT EXISTS "files" (
 		"path"           VARCHAR(65535) NOT NULL,
 		"name"           VARCHAR(65535) NOT NULL,
