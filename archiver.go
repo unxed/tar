@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"io"
+    "bufio"
 	"os"
 	"path/filepath"
 	"sort"
@@ -234,6 +235,12 @@ func (a *Archiver) closeInternal() error {
 		a.wc.comp.Close()
 	}
 
+	// Сбрасываем буфер перед тем, как определять позицию shadowStartOffset.
+	// Это ВАЖНО, чтобы `a.wc.compTracker.pos` соответствовал физической позиции в файле.
+	if bw, ok := a.wc.compTracker.w.(*bufio.Writer); ok {
+		bw.Flush()
+	}
+
 	idx.Close()
 
 	// Read the generated SQLite index into memory
@@ -336,6 +343,12 @@ func (a *Archiver) closeInternal() error {
 
 	if shadowComp != nil {
 		shadowComp.Close()
+	}
+
+	// Сбрасываем буфер еще раз, потому что shadowTar записал индекс
+	// и метаданные в bufio. Без этого Flush данные потеряются при закрытии файла.
+	if bw, ok := a.wc.compTracker.w.(*bufio.Writer); ok {
+		bw.Flush()
 	}
 
 	shadowSize := a.wc.compTracker.pos - shadowStartOffset

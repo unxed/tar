@@ -2,6 +2,7 @@ package tar
 
 import (
 	"archive/tar"
+    "bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -23,6 +24,7 @@ type Updater struct {
 	isCompressed bool
 	compMethod   uint16
 	shadowStart  int64
+	buf          *bufio.Writer
 }
 
 // NewUpdater opens a .tar or compressed .tar file for appending.
@@ -102,6 +104,10 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 
 	var tw *tar.Writer
 	var comp io.WriteCloser
+
+	// Используем буферизацию и в апдейтере для скорости на NTFS
+	bufOut := bufio.NewWriterSize(f, 2*1024*1024)
+
 	if isCompressed {
 		// Initialize the appropriate compressor starting from truncated position
 		ci, ok := compressors.Load(method)
@@ -109,13 +115,13 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 			return nil, ErrAlgorithm
 		}
 		var err error
-		comp, err = ci.(Compressor)(f)
+		comp, err = ci.(Compressor)(bufOut)
 		if err != nil {
 			return nil, err
 		}
 		tw = tar.NewWriter(comp)
 	} else {
-		tw = tar.NewWriter(f)
+		tw = tar.NewWriter(bufOut)
 	}
 
 	return &Updater{
@@ -125,6 +131,7 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 		isCompressed: isCompressed,
 		compMethod:   method,
 		shadowStart:  shadowStart,
+		buf:          bufOut,
 	}, nil
 }
 
@@ -241,12 +248,18 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 }
 
 func (u *Updater) Close() error {
-	err := u.tw.Close()
+	var err error
+	if u.tw != nil {
+		err = u.tw.Close()
+	}
 	if u.comp != nil {
 		if cerr := u.comp.Close(); cerr != nil {
-			if err == nil {
-				err = cerr
-			}
+			if err == nil { err = cerr }
+		}
+	}
+	if u.buf != nil {
+		if berr := u.buf.Flush(); berr != nil {
+			if err == nil { err = berr }
 		}
 	}
 	return err
