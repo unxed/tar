@@ -428,7 +428,10 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				return err
 			}
 			if hdr.Size > 0 {
-				_, err = io.Copy(f, e.rc)
+				bufInterface := sparseBufPool.Get()
+				buf := bufInterface.([]byte)
+				_, err = io.CopyBuffer(f, e.rc, buf)
+				sparseBufPool.Put(bufInterface)
 			}
 			f.Close()
 			if err != nil {

@@ -137,6 +137,15 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 
 // Append creates a new file entry in the archive.
 func (u *Updater) Append(name string, size int64, data []byte) error {
+	var r io.Reader
+	if len(data) > 0 {
+		r = bytes.NewReader(data)
+	}
+	return u.AppendReader(name, size, r)
+}
+
+// AppendReader creates a new file entry in the archive from an io.Reader stream.
+func (u *Updater) AppendReader(name string, size int64, r io.Reader) error {
 	println("[DIAG-UPD] Append: Starting append for", name, "size=", size)
 
 	stat, err := u.f.Stat()
@@ -236,9 +245,9 @@ func (u *Updater) Append(name string, size int64, data []byte) error {
 		println("[DIAG-UPD] Append: WriteHeader failed:", err.Error())
 		return err
 	}
-	if len(data) > 0 {
-		println("[DIAG-UPD] Append: Writing content size=", len(data))
-		if _, err := u.tw.Write(data); err != nil {
+	if r != nil {
+		println("[DIAG-UPD] Append: Writing content size=", size)
+		if _, err := io.CopyBuffer(u.tw, r, make([]byte, 1024*1024)); err != nil {
 			println("[DIAG-UPD] Append: Write content failed:", err.Error())
 			return err
 		}
