@@ -1,6 +1,7 @@
 package tar
 
 import (
+    "bytes"
 	"encoding/binary"
 	"io"
 	"strings"
@@ -165,6 +166,7 @@ func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName
 
 	tr := NewReader(rd)
 	var payload []byte
+	copyBuf := make([]byte, 1024*1024)
 
 	for {
 		hdr, err := tr.Next()
@@ -176,10 +178,11 @@ func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName
 		}
 
 		if hdr.Name == targetName {
-			payload, err = io.ReadAll(tr)
-			if err != nil {
+			var buf bytes.Buffer
+			if _, err = io.CopyBuffer(&buf, tr, copyBuf); err != nil {
 				return nil, err
 			}
+			payload = buf.Bytes()
 			break
 		}
 	}

@@ -1,7 +1,7 @@
 package tar
 
 import (
-	"bytes"
+    "bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -410,7 +410,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					}
 				}
 			} else if hdr.Size > 0 {
-				io.Copy(io.Discard, e.rc) // Discard if not in incremental mode
+				io.CopyBuffer(io.Discard, e.rc, make([]byte, 1024*1024))
 			}
 			continue
 
