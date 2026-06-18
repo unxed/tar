@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"io"
+	"io/fs"
     "bufio"
 	"os"
 	"path/filepath"
@@ -529,7 +530,9 @@ func Compress(inputFilePath, outputFilePath string) error {
 	defer a.Close()
 
 	files := make(map[string]os.FileInfo)
-	err = filepath.Walk(inputFilePath, func(path string, info os.FileInfo, err error) error {
+	err = filepath.WalkDir(inputFilePath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil { return err }
+		info, err := d.Info()
 		if err != nil { return err }
 		files[path] = info
 		return nil
