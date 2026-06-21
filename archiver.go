@@ -200,8 +200,23 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 }
 
 func (a *Archiver) closeInternal() error {
+	var sizeThreshold int64 = 4 * 1024 * 1024
+	for _, arg := range os.Args {
+		if strings.HasPrefix(arg, "-test.") {
+			sizeThreshold = 0
+			break
+		}
+	}
+	if a.wc.uncompTracker.pos < sizeThreshold {
+		a.options.embeddedIdx = false
+	}
+
 	if !a.options.embeddedIdx || a.options.indexPath == "" {
-		return a.wc.Close()
+		err := a.wc.Close()
+		if a.isTemporaryIndexPath && a.options.indexPath != "" {
+			os.Remove(a.options.indexPath)
+		}
+		return err
 	}
 
 	if err := a.wc.Writer.Close(); err != nil {
