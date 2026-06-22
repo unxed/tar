@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ulikunitz/xz"
+	"github.com/unxed/xz"
 )
 
 type TarFS struct {

@@ -4,7 +4,7 @@ import (
 	"archive/tar"
 	"io"
 	"os"
-	"github.com/ulikunitz/xz"
+	"github.com/unxed/xz"
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 )

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ulikunitz/xz"
+	"github.com/unxed/xz"
 )
 
 func TestTarFS_XZRandomAccess(t *testing.T) {
