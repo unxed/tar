@@ -93,20 +93,29 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 	// Try to find embedded F4 Shadow Index
 	isTemporaryIndex := false
 	if _, errStat := os.Stat(indexPath); os.IsNotExist(errStat) {
-		f, errCreate := os.OpenFile(indexPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
-		if errCreate == nil {
-			errShadow := extractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
-			f.Close()
-			if errShadow == nil {
-				isTemporaryIndex = true
+		_, shadowSize, errLocate := LocateShadowStream(ra, size, method)
+		if errLocate == nil && shadowSize > 0 {
+			f, errCreate := os.OpenFile(indexPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
+			if errCreate == nil {
+				errShadow := extractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
+				f.Close()
+				if errShadow == nil {
+					isTemporaryIndex = true
+				} else {
+					os.Remove(indexPath)
+					if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
+						mvr.Close()
+						return nil, errIdx
+					}
+				}
 			} else {
-				os.Remove(indexPath)
 				if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
 					mvr.Close()
 					return nil, errIdx
 				}
 			}
 		} else {
+			// No embedded shadow stream found, build index by scanning the archive
 			if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
 				mvr.Close()
 				return nil, errIdx

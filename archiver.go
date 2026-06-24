@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"io"
 	"io/fs"
-    "bufio"
 	"os"
 	"path/filepath"
 	"sort"
@@ -223,7 +222,6 @@ func (a *Archiver) closeInternal() error {
 		return err
 	}
 
-
 	idx := a.wc.idx
 	var gzidxData []byte
 	if idx != nil {
@@ -245,19 +243,13 @@ func (a *Archiver) closeInternal() error {
 				gzidxData = data
 			}
 		}
+		// Гарантируем, что все изменения сброшены на диск
+		idx.Close()
 	}
 
 	if a.wc.comp != nil {
 		a.wc.comp.Close()
 	}
-
-	// Сбрасываем буфер перед тем, как определять позицию shadowStartOffset.
-	// Это ВАЖНО, чтобы `a.wc.compTracker.pos` соответствовал физической позиции в файле.
-	if bw, ok := a.wc.compTracker.w.(*bufio.Writer); ok {
-		bw.Flush()
-	}
-
-	idx.Close()
 
 	// Read the generated SQLite index into memory
 	idxData, err := os.ReadFile(a.options.indexPath)
@@ -360,8 +352,6 @@ func (a *Archiver) closeInternal() error {
 	if shadowComp != nil {
 		shadowComp.Close()
 	}
-
-	// Буфер bufio удален, Flush больше не требуется.
 
 	shadowSize := a.wc.compTracker.pos - shadowStartOffset
 	err = WriteMagicFooter(a.wc.f, a.options.method, shadowStartOffset, shadowSize)
