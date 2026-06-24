@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -91,10 +90,22 @@ func WithExtractorSparse(b bool) ExtractorOption {
 	}
 }
 
-var sparseBufPool = sync.Pool{
-	New: func() any {
-		return make([]byte, 1024*1024) // 1MB chunk for faster sparse operations
-	},
+var sparseBufCh = make(chan []byte, 64)
+
+func getSparseBuf() []byte {
+	select {
+	case b := <-sparseBufCh:
+		return b
+	default:
+		return make([]byte, 1024*1024)
+	}
+}
+
+func putSparseBuf(b []byte) {
+	select {
+	case sparseBufCh <- b:
+	default:
+	}
 }
 
 func isAllZeros(p []byte) bool {
@@ -132,9 +143,8 @@ func copySparseBytes(dst *os.File, data []byte) error {
 }
 
 func copySparse(dst *os.File, src io.Reader, size int64) error {
-	bufInterface := sparseBufPool.Get()
-	defer sparseBufPool.Put(bufInterface)
-	buf := bufInterface.([]byte)
+	buf := getSparseBuf()
+	defer putSparseBuf(buf)
 
 	var written int64
 	for {
@@ -416,10 +426,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					}
 				}
 			} else if hdr.Size > 0 {
-				bufInterface := sparseBufPool.Get()
-				buf := bufInterface.([]byte)
+				buf := getSparseBuf()
 				io.CopyBuffer(io.Discard, e.rc, buf)
-				sparseBufPool.Put(bufInterface)
+				putSparseBuf(buf)
 			}
 			continue
 
@@ -437,10 +446,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				return err
 			}
 			if hdr.Size > 0 {
-				bufInterface := sparseBufPool.Get()
-				buf := bufInterface.([]byte)
+				buf := getSparseBuf()
 				_, err = io.CopyBuffer(f, e.rc, buf)
-				sparseBufPool.Put(bufInterface)
+				putSparseBuf(buf)
 			}
 			f.Close()
 			if err != nil {
@@ -614,10 +622,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						return err
 					}
 					// Переиспользуем наш гигантский 1МБ пул буферов вместо дефолтных 32КБ
-					bufInterface := sparseBufPool.Get()
-					buf := bufInterface.([]byte)
+					buf := getSparseBuf()
 					_, err = io.CopyBuffer(f, r, buf)
-					sparseBufPool.Put(bufInterface)
+					putSparseBuf(buf)
 				}
 				if err != nil {
 					return err
