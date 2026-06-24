@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"testing"
 	"time"
+	"github.com/klauspost/compress/zstd"
 )
 
 // TestMultiCompressions verifies round-trip compression and extraction for all supported methods.
@@ -631,6 +632,55 @@ func TestEmbeddedIndex_Roundtrip(t *testing.T) {
 				t.Errorf("Content mismatch: expected 'embedded index verification data', got %q", string(data))
 			}
 		})
+	}
+}
+func TestZstdDecoderPooling(t *testing.T) {
+	data := []byte("verification of zstd decoder pooling in unxed/tar")
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("failed to create zstd encoder: %v", err)
+	}
+	enc.Write(data)
+	enc.Close()
+
+	compressedData := buf.Bytes()
+
+	format := zstdFormat{}
+	dec1, err := format.Decompress(bytes.NewReader(compressedData))
+	if err != nil {
+		t.Fatalf("Decompress 1 failed: %v", err)
+	}
+	pdec1, ok := dec1.(*pooledTarZstdReader)
+	if !ok {
+		t.Fatal("expected pooledTarZstdReader")
+	}
+	underlyingDec1 := pdec1.dec
+
+	decomp1, err := io.ReadAll(dec1)
+	if err != nil || !bytes.Equal(decomp1, data) {
+		t.Fatalf("decomp 1 mismatch: got %q, err: %v", string(decomp1), err)
+	}
+	dec1.Close()
+
+	dec2, err := format.Decompress(bytes.NewReader(compressedData))
+	if err != nil {
+		t.Fatalf("Decompress 2 failed: %v", err)
+	}
+	pdec2, ok := dec2.(*pooledTarZstdReader)
+	if !ok {
+		t.Fatal("expected pooledTarZstdReader")
+	}
+	underlyingDec2 := pdec2.dec
+
+	decomp2, err := io.ReadAll(dec2)
+	if err != nil || !bytes.Equal(decomp2, data) {
+		t.Fatalf("decomp 2 mismatch: got %q, err: %v", string(decomp2), err)
+	}
+	dec2.Close()
+
+	if underlyingDec1 != underlyingDec2 {
+		t.Error("expected zstd.Decoder to be pooled and reused, but got different instances")
 	}
 }
 

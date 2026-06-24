@@ -455,22 +455,59 @@ func (xzFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
 
 // -- ZSTD --
 type zstdFormat struct{}
-func (zstdFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
-	dec, err := zstd.NewReader(r, zstd.WithDecoderMaxWindow(512<<20), zstd.WithDecoderMaxMemory(512<<20))
-	if err != nil {
+
+var zstdDecoderPool sync.Pool
+
+type pooledTarZstdReader struct {
+	mu  sync.Mutex
+	dec *zstd.Decoder
+}
+
+func (r *pooledTarZstdReader) Read(p []byte) (n int, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.dec == nil {
+		return 0, errors.New("tar: Read after Close")
+	}
+	return r.dec.Read(p)
+}
+
+func (r *pooledTarZstdReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var err error
+	if r.dec != nil {
+		err = r.dec.Reset(nil)
+		zstdDecoderPool.Put(r.dec)
+		r.dec = nil
+	}
+	return err
+}
+
+func newTarZstdReader(r io.Reader) (io.ReadCloser, error) {
+	dec, _ := zstdDecoderPool.Get().(*zstd.Decoder)
+	if dec == nil {
+		var err error
+		dec, err = zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(512<<20), zstd.WithDecoderMaxMemory(512<<20))
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := dec.Reset(r); err != nil {
+		zstdDecoderPool.Put(dec)
 		return nil, err
 	}
-	return dec.IOReadCloser(), nil
+	return &pooledTarZstdReader{dec: dec}, nil
+}
+
+func (zstdFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
+	return newTarZstdReader(r)
 }
 
 // ZSTD frames are byte-aligned and independent. We can natively resume from any frame!
 func (zstdFormat) ResumeFromBlockOffset(r io.ReaderAt, bo *BlockOffset) (io.ReadCloser, error) {
 	sr := io.NewSectionReader(r, bo.BlockOffset, 1<<63-1)
-	dec, err := zstd.NewReader(sr, zstd.WithDecoderMaxWindow(512<<20), zstd.WithDecoderMaxMemory(512<<20))
-	if err != nil {
-		return nil, err
-	}
-	return dec.IOReadCloser(), nil
+	return newTarZstdReader(sr)
 }
 
 func init() {
