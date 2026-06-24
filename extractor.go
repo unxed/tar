@@ -339,7 +339,8 @@ func (e *Extractor) Extract(ctx context.Context) error {
 
 	var taskCh chan func() error
 	startWorkers := func() {
-		taskCh = make(chan func() error, e.options.concurrency*2)
+		// Увеличиваем буфер до 8192, чтобы устранить "голодание" последовательного декомпрессора
+		taskCh = make(chan func() error, 8192)
 		for i := 0; i < e.options.concurrency; i++ {
 			wg.Go(func() error {
 				for task := range taskCh {
