@@ -112,10 +112,13 @@ func extractSpecialFile(path string, hdr *tar.Header) error {
 	return mknod(path, mode, dev)
 }
 func sysXattrs(path string, hdr *tar.Header) error {
+	// Сначала запрашиваем размер списка xattrs.
+	// Большинство файлов в Linux не имеют xattrs. Если их нет, мы выходим за 1 быстрый syscall.
 	sz, err := unix.Llistxattr(path, nil)
 	if err != nil || sz <= 0 {
 		return nil
 	}
+
 	buf := make([]byte, sz)
 	sz, err = unix.Llistxattr(path, buf)
 	if err != nil {

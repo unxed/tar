@@ -1,6 +1,7 @@
 package tar
 
 import (
+    "unsafe"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -112,11 +113,23 @@ func isAllZeros(p []byte) bool {
 	if len(p) == 0 {
 		return true
 	}
-	if p[0] != 0 {
-		return false
+
+	// Быстрый путь для 64-битных платформ: проверяем по 8 байт за раз
+	// Это работает быстрее, чем bytes.Equal на больших пустых блоках (типа 1MB sparse chunks)
+	for len(p) >= 8 {
+		if *(*uint64)(unsafe.Pointer(&p[0])) != 0 {
+			return false
+		}
+		p = p[8:]
 	}
-	// Highly optimized SIMD-comparison via standard Go runtime bytealg
-	return len(p) == 1 || p[0] == p[1] && bytes.Equal(p[:len(p)-1], p[1:])
+
+	// Хвост проверяем побайтово
+	for i := range p {
+		if p[i] != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func copySparseBytes(dst *os.File, data []byte) error {
