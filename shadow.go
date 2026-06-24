@@ -143,10 +143,10 @@ func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, 
 }
 
 // extractShadowFile extracts a specific file payload from the Stream 2 metadata shadow stream.
-func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName string) ([]byte, error) {
+func extractShadowFileToWriter(ra io.ReaderAt, fileSize int64, method uint16, targetName string, out io.Writer) error {
 	shadowStart, shadowSize, err := LocateShadowStream(ra, fileSize, method)
 	if err != nil || shadowSize == 0 {
-		return nil, err
+		return io.ErrUnexpectedEOF
 	}
 
 	sr := io.NewSectionReader(ra, shadowStart, shadowSize)
@@ -155,20 +155,18 @@ func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName
 	if method != Store {
 		di, ok := decompressors.Load(method)
 		if !ok {
-			return nil, ErrAlgorithm
+			return ErrAlgorithm
 		}
 		dcomp, err := di.(Decompressor).Decompress(rd)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer dcomp.Close()
 		rd = dcomp
 	}
 
-	// ОПТИМИЗАЦИЯ: Буферизируем чтение теневого потока метаданных (F4SS)
 	bufferedRd := bufio.NewReaderSize(rd, 1024*1024)
 	tr := NewReader(bufferedRd)
-	var payload []byte
 	copyBuf := make([]byte, 1024*1024)
 
 	for {
@@ -177,24 +175,24 @@ func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName
 			break
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		if hdr.Name == targetName {
-			var buf bytes.Buffer
-			if _, err = io.CopyBuffer(&buf, tr, copyBuf); err != nil {
-				return nil, err
-			}
-			payload = buf.Bytes()
-			break
+			_, err = io.CopyBuffer(out, tr, copyBuf)
+			return err
 		}
 	}
 
-	if payload == nil {
-		return nil, io.ErrUnexpectedEOF
+	return io.ErrUnexpectedEOF
+}
+func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName string) ([]byte, error) {
+	var buf bytes.Buffer
+	err := extractShadowFileToWriter(ra, fileSize, method, targetName, &buf)
+	if err != nil {
+		return nil, err
 	}
-
-	return payload, nil
+	return buf.Bytes(), nil
 }
 
 func serializeProperties(props map[string]string) []byte {

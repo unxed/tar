@@ -93,14 +93,20 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 	// Try to find embedded F4 Shadow Index
 	isTemporaryIndex := false
 	if _, errStat := os.Stat(indexPath); os.IsNotExist(errStat) {
-		shadowPayload, errShadow := extractShadowIndex(ra, size, method)
-		if errShadow == nil && len(shadowPayload) > 0 {
-			// Write embedded SQLite index to disk temporarily (SQLite requires a physical file)
-			if errWrite := os.WriteFile(indexPath, shadowPayload, 0600); errWrite == nil {
+		f, errCreate := os.OpenFile(indexPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
+		if errCreate == nil {
+			errShadow := extractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
+			f.Close()
+			if errShadow == nil {
 				isTemporaryIndex = true
+			} else {
+				os.Remove(indexPath)
+				if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
+					mvr.Close()
+					return nil, errIdx
+				}
 			}
 		} else {
-			// No embedded index found, build it on-the-fly
 			if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
 				mvr.Close()
 				return nil, errIdx

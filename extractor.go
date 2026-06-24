@@ -497,8 +497,8 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				// Small files: read into memory and delegate I/O to worker pool
 				var data []byte
 				if hdr.Size > 0 {
-					data, err = io.ReadAll(e.rc)
-					if err != nil {
+					data = make([]byte, hdr.Size)
+					if _, err = io.ReadFull(e.rc, data); err != nil {
 						return err
 					}
 				}

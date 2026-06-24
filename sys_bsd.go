@@ -10,10 +10,56 @@ import (
 	"os/user"
 	"syscall"
 	"time"
+	"sync"
 
 	"golang.org/x/sys/unix"
 )
 
+var (
+	userCache   = make(map[uint32]string)
+	groupCache  = make(map[uint32]string)
+	idCacheLock sync.RWMutex
+)
+
+func getUsername(uid uint32) string {
+	idCacheLock.RLock()
+	name, ok := userCache[uid]
+	idCacheLock.RUnlock()
+	if ok {
+		return name
+	}
+	idCacheLock.Lock()
+	defer idCacheLock.Unlock()
+	if name, ok := userCache[uid]; ok {
+		return name
+	}
+	if u, err := user.LookupId(fmt.Sprint(uid)); err == nil {
+		userCache[uid] = u.Username
+		return u.Username
+	}
+	userCache[uid] = ""
+	return ""
+}
+
+func getGroupname(gid uint32) string {
+	idCacheLock.RLock()
+	name, ok := groupCache[gid]
+	idCacheLock.RUnlock()
+	if ok {
+		return name
+	}
+	idCacheLock.Lock()
+	defer idCacheLock.Unlock()
+	if name, ok := groupCache[gid]; ok {
+		return name
+	}
+	if g, err := user.LookupGroupId(fmt.Sprint(gid)); err == nil {
+		groupCache[gid] = g.Name
+		return g.Name
+	}
+	groupCache[gid] = ""
+	return ""
+}
 func sysHeader(fi os.FileInfo, hdr *tar.Header) {
 	sys, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
@@ -23,11 +69,11 @@ func sysHeader(fi os.FileInfo, hdr *tar.Header) {
 	hdr.Uid = int(sys.Uid)
 	hdr.Gid = int(sys.Gid)
 
-	if u, err := user.LookupId(fmt.Sprint(sys.Uid)); err == nil {
-		hdr.Uname = u.Username
+	if uname := getUsername(sys.Uid); uname != "" {
+		hdr.Uname = uname
 	}
-	if g, err := user.LookupGroupId(fmt.Sprint(sys.Gid)); err == nil {
-		hdr.Gname = g.Name
+	if gname := getGroupname(sys.Gid); gname != "" {
+		hdr.Gname = gname
 	}
 
 	hdr.AccessTime = time.Unix(sys.Atimespec.Sec, sys.Atimespec.Nsec)
