@@ -456,7 +456,7 @@ func (xzFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
 // -- ZSTD --
 type zstdFormat struct{}
 func (zstdFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
-	dec, err := zstd.NewReader(r)
+	dec, err := zstd.NewReader(r, zstd.WithDecoderMaxWindow(128<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -466,7 +466,7 @@ func (zstdFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
 // ZSTD frames are byte-aligned and independent. We can natively resume from any frame!
 func (zstdFormat) ResumeFromBlockOffset(r io.ReaderAt, bo *BlockOffset) (io.ReadCloser, error) {
 	sr := io.NewSectionReader(r, bo.BlockOffset, 1<<63-1)
-	dec, err := zstd.NewReader(sr)
+	dec, err := zstd.NewReader(sr, zstd.WithDecoderMaxWindow(128<<20))
 	if err != nil {
 		return nil, err
 	}
