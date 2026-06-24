@@ -318,12 +318,30 @@ func (e *Extractor) Close() error {
 // Extract reads TAR sequentially but delegates disk I/O and chmod/chown to a worker pool.
 func (e *Extractor) Extract(ctx context.Context) error {
 	parentCtx := ctx
-	limiter := make(chan struct{}, e.options.concurrency)
 	wg, ctx := errgroup.WithContext(parentCtx)
 
 	// Directories and their attributes to apply after all files are extracted.
 	dirs := make(map[string]*Header)
 	var links []*Header
+
+	var taskCh chan func() error
+	startWorkers := func() {
+		taskCh = make(chan func() error, e.options.concurrency*2)
+		for i := 0; i < e.options.concurrency; i++ {
+			wg.Go(func() error {
+				for task := range taskCh {
+					if ctx.Err() != nil {
+						continue
+					}
+					if err := task(); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		}
+	}
+	startWorkers()
 
 	mainErr := func() error {
 		for {
@@ -433,12 +451,14 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			continue
 
 		case TypeGNUMultiVol:
-			// Wait for all previous asynchronous writes to complete to avoid races
+			// Close the channel to let the current workers finish their tasks
+			close(taskCh)
 			if err := wg.Wait(); err != nil {
 				return err
 			}
-			// Reset wg with parentCtx
+			// Reset wg with parentCtx and restart the workers
 			wg, ctx = errgroup.WithContext(parentCtx)
+			startWorkers()
 
 			e.synthesizeDir(filepath.Dir(path))
 			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, os.FileMode(hdr.Mode))
@@ -468,28 +488,33 @@ func (e *Extractor) Extract(ctx context.Context) error {
 
 		case TypeChar, TypeBlock, TypeFifo:
 			e.synthesizeDir(filepath.Dir(path))
-			wg.Go(func() error {
-				err := extractSpecialFile(path, hdr)
+			h, p := *hdr, path
+			select {
+			case taskCh <- func() error {
+				err := extractSpecialFile(p, &h)
 				if err != nil {
 					return err
 				}
 
 				if e.options.xattrs {
-					applyXattrs(path, hdr)
+					applyXattrs(p, &h)
 				}
 
-				uid, gid := resolveIds(hdr, e.options.numericOwner)
-				err = lchown(path, uid, gid)
+				uid, gid := resolveIds(&h, e.options.numericOwner)
+				err = lchown(p, uid, gid)
 				if err != nil && e.options.chownErrorHandler != nil {
-					err = e.options.chownErrorHandler(path, err)
+					err = e.options.chownErrorHandler(p, err)
 				}
 				if err != nil && e.options.tolerant {
-					fmt.Printf("tar: skipping corrupted special file %q: %v\n", hdr.Name, err)
+					fmt.Printf("tar: skipping corrupted special file %q: %v\n", h.Name, err)
 					return nil
 				}
 				atomic.AddInt64(&e.entries, 1)
 				return err
-			})
+			}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 
 		case TypeReg, TypeRegA:
 			e.synthesizeDir(filepath.Dir(path))
@@ -516,15 +541,13 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					hdr.Size = int64(len(data))
 				}
 
-				limiter <- struct{}{}
-				h, p, _ := *hdr, path, data // Local copies for worker
-				wg.Go(func() error {
-					defer func() { <-limiter }()
-
+				h, p, d := *hdr, path, data // Local copies for worker
+				select {
+				case taskCh <- func() error {
 					writePath := p
 					hdr := &h
 					if e.options.safeWrites {
-						writePath = path + ".tmp"
+						writePath = p + ".tmp"
 					}
 
 					f, err := os.OpenFile(writePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
@@ -544,11 +567,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						return err
 					}
 
-					if len(data) > 0 {
+					if len(d) > 0 {
 						if e.options.sparse {
-							err = copySparseBytes(f, data)
+							err = copySparseBytes(f, d)
 						} else {
-							_, err = io.Copy(f, bytes.NewReader(data))
+							_, err = io.Copy(f, bytes.NewReader(d))
 						}
 					}
 					f.Close()
@@ -573,7 +596,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					}
 
 					if e.options.safeWrites {
-						if rerr := os.Rename(writePath, path); rerr != nil {
+						if rerr := os.Rename(writePath, p); rerr != nil {
 							os.Remove(writePath)
 							return rerr
 						}
@@ -585,7 +608,10 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					atomic.AddInt64(&e.written, hdr.Size)
 					atomic.AddInt64(&e.entries, 1)
 					return err
-				})
+				}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			} else {
 				// Large files: stream sequentially in the main loop to prevent OOM
 				writePath := path
@@ -632,10 +658,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				cleanup = false
 
 				// Apply metadata in background to save time
-				limiter <- struct{}{}
 				h, p := *hdr, writePath // Local copies for worker
-				wg.Go(func() error {
-					defer func() { <-limiter }()
+				select {
+				case taskCh <- func() error {
 					hdr := &h
 					writePath := p
 					if e.options.xattrs {
@@ -666,13 +691,17 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					atomic.AddInt64(&e.written, hdr.Size)
 					atomic.AddInt64(&e.entries, 1)
 					return err
-				})
+				}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
 		}
 		}
 		return nil
 	}()
 
+	close(taskCh)
 	waitErr := wg.Wait()
 	if mainErr != nil {
 		return mainErr
