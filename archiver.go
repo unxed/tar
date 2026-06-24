@@ -420,6 +420,12 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 	}
 	sort.Strings(names)
 
+	// Получаем текущую рабочую директорию ОДИН раз, чтобы избежать тысяч системных вызовов getcwd()
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
 	// Выделяем 1МБ буфер для копирования данных, чтобы избежать дефолтных 32КБ в io.Copy
 	copyBuf := make([]byte, 1024*1024)
 
@@ -429,15 +435,22 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		}
 
 		fi := files[name]
-		path, err := filepath.Abs(name)
-		if err != nil {
-			return err
+
+		// Быстрый путь для абсолютных путей без вызова тяжелой filepath.Abs
+		var path string
+		if filepath.IsAbs(name) {
+			path = filepath.Clean(name)
+		} else {
+			path = filepath.Clean(filepath.Join(wd, name))
 		}
 
 		var rel string
 		if a.options.pathMapping != nil && a.options.pathMapping[path] != "" {
 			rel = a.options.pathMapping[path]
-			err = nil
+		} else if strings.HasPrefix(path, a.options.chroot) {
+			// Высокоскоростной fast-path для путей внутри chroot
+			rel = path[len(a.options.chroot):]
+			rel = filepath.ToSlash(strings.TrimPrefix(rel, string(filepath.Separator)))
 		} else {
 			rel, err = filepath.Rel(a.options.chroot, path)
 			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
@@ -447,10 +460,9 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 					rel = strings.TrimPrefix(rel, filepath.ToSlash(vol))
 				}
 				rel = strings.TrimPrefix(rel, "/")
-				err = nil
 			}
 		}
-		if rel == "." {
+		if rel == "." || rel == "" {
 			continue // Skip root
 		}
 
