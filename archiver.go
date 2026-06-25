@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"runtime"
 )
 
 type ArchiverOption func(*archiverOptions) error
@@ -410,72 +411,153 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 	}
 	sort.Strings(names)
 
-	// Получаем текущую рабочую директорию ОДИН раз, чтобы избежать тысяч системных вызовов getcwd()
-	wd, err := os.Getwd()
-	if err != nil {
-		return err
+	concurrency := runtime.GOMAXPROCS(0)
+	if concurrency < 1 {
+		concurrency = 1
 	}
 
-	// Выделяем 1МБ буфер для копирования данных, чтобы избежать дефолтных 32КБ в io.Copy
+	// Предотвращаем утечку горутин, если Archive прервется ошибкой
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type fileTask struct {
+		name    string
+		path    string
+		rel     string
+		fi      os.FileInfo
+		link    string
+		dataPtr *[]byte
+		err     error
+		done    chan struct{}
+	}
+
+	tasks := make(chan *fileTask, concurrency*2)
+	orderedTasks := make(chan *fileTask, concurrency*2)
+
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for task := range tasks {
+				if ctx.Err() == nil && task.fi.Mode().IsRegular() && task.link == "" {
+					size := task.fi.Size()
+					if size > 0 && size <= 16*1024*1024 {
+						task.dataPtr = getSmallBuffer(size)
+						f, err := os.Open(task.path)
+						if err == nil {
+							_, task.err = io.ReadFull(f, *task.dataPtr)
+							f.Close()
+						} else {
+							task.err = err
+						}
+					}
+				}
+				close(task.done)
+			}
+		}()
+	}
+
+	go func() {
+		defer close(tasks)
+		defer close(orderedTasks)
+
+		wd, err := os.Getwd()
+		if err != nil {
+			return
+		}
+
+		for _, name := range names {
+			if ctx.Err() != nil {
+				break
+			}
+			fi := files[name]
+			var path string
+			if filepath.IsAbs(name) {
+				path = filepath.Clean(name)
+			} else {
+				path = filepath.Clean(filepath.Join(wd, name))
+			}
+
+			var rel string
+			if a.options.pathMapping != nil && a.options.pathMapping[path] != "" {
+				rel = a.options.pathMapping[path]
+			} else if strings.HasPrefix(path, a.options.chroot) {
+				rel = path[len(a.options.chroot):]
+				rel = filepath.ToSlash(strings.TrimPrefix(rel, string(filepath.Separator)))
+			} else {
+				var rerr error
+				rel, rerr = filepath.Rel(a.options.chroot, path)
+				if rerr != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+					rel = filepath.ToSlash(path)
+					vol := filepath.VolumeName(path)
+					if vol != "" {
+						rel = strings.TrimPrefix(rel, filepath.ToSlash(vol))
+					}
+					rel = strings.TrimPrefix(rel, "/")
+				}
+			}
+
+			if rel == "." || rel == "" {
+				continue
+			}
+
+			link := ""
+			if fi.Mode()&os.ModeSymlink != 0 {
+				link, _ = os.Readlink(path)
+			} else {
+				link = getHardLinkTarget(fi, a.seenHardLinks)
+				if link == "" {
+					rememberHardLink(fi, rel, a.seenHardLinks)
+				}
+			}
+
+			task := &fileTask{
+				name: name,
+				path: path,
+				rel:  rel,
+				fi:   fi,
+				link: link,
+				done: make(chan struct{}),
+			}
+
+			select {
+			case tasks <- task:
+			case <-ctx.Done():
+				return
+			}
+
+			select {
+			case orderedTasks <- task:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	copyBuf := make([]byte, 1024*1024)
 
-	for _, name := range names {
+	for task := range orderedTasks {
+		<-task.done
+
+		if task.err != nil {
+			return task.err
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		fi := files[name]
-
-		// Быстрый путь для абсолютных путей без вызова тяжелой filepath.Abs
-		var path string
-		if filepath.IsAbs(name) {
-			path = filepath.Clean(name)
-		} else {
-			path = filepath.Clean(filepath.Join(wd, name))
-		}
-
-		var rel string
-		if a.options.pathMapping != nil && a.options.pathMapping[path] != "" {
-			rel = a.options.pathMapping[path]
-		} else if strings.HasPrefix(path, a.options.chroot) {
-			// Высокоскоростной fast-path для путей внутри chroot
-			rel = path[len(a.options.chroot):]
-			rel = filepath.ToSlash(strings.TrimPrefix(rel, string(filepath.Separator)))
-		} else {
-			rel, err = filepath.Rel(a.options.chroot, path)
-			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-				rel = filepath.ToSlash(path)
-				vol := filepath.VolumeName(path)
-				if vol != "" {
-					rel = strings.TrimPrefix(rel, filepath.ToSlash(vol))
-				}
-				rel = strings.TrimPrefix(rel, "/")
-			}
-		}
-		if rel == "." || rel == "" {
-			continue // Skip root
-		}
-
-		link := ""
-		if fi.Mode()&os.ModeSymlink != 0 {
-			link, err = os.Readlink(path)
-			if err != nil {
-				return err
-			}
-		} else {
-			link = getHardLinkTarget(fi, a.seenHardLinks)
-		}
-
-		hdr, err := FileInfoHeader(fi, link)
+		hdr, err := FileInfoHeader(task.fi, task.link)
 		if err != nil {
 			return err
 		}
-		hdr.Name = filepath.ToSlash(rel)
-		if fi.IsDir() {
+		hdr.Name = filepath.ToSlash(task.rel)
+		if task.fi.IsDir() {
 			hdr.Name += "/"
 		}
+
 		if a.options.xattrs {
-			if acl, err := getFileSecurityFunc(path); err == nil && len(acl) > 0 {
+			if acl, err := getFileSecurityFunc(task.path); err == nil && len(acl) > 0 {
 				if hdr.PAXRecords == nil {
 					hdr.PAXRecords = make(map[string]string)
 				}
@@ -483,19 +565,15 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 			}
 		}
 
-		// Enrich header with Unix-specific metadata (UID/GID as text, devices, atime/ctime)
-		sysHeader(fi, hdr)
+		sysHeader(task.fi, hdr)
 
-		if link == "" {
-		if a.options.xattrs {
-			sysXattrs(path, hdr)
-		}
-			rememberHardLink(fi, hdr.Name, a.seenHardLinks)
-		} else if fi.Mode()&os.ModeSymlink == 0 {
-			// Bypass Go standard library limitation:
-			// manually enforce hardlink type and target path
+		if task.link == "" {
+			if a.options.xattrs {
+				sysXattrs(task.path, hdr)
+			}
+		} else if task.fi.Mode()&os.ModeSymlink == 0 {
 			hdr.Typeflag = TypeLink
-			hdr.Linkname = link
+			hdr.Linkname = task.link
 			hdr.Size = 0
 		}
 
@@ -506,15 +584,19 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 			return err
 		}
 
-		if fi.Mode().IsRegular() && hdr.Typeflag != TypeLink {
-			f, err := os.Open(path)
-			if err != nil {
-				a.m.Unlock()
-				return err
+		if task.fi.Mode().IsRegular() && hdr.Typeflag != TypeLink {
+			if task.dataPtr != nil {
+				_, err = a.wc.Write(*task.dataPtr)
+				putSmallBuffer(task.dataPtr)
+			} else if task.fi.Size() > 0 {
+				f, ferr := os.Open(task.path)
+				if ferr != nil {
+					a.m.Unlock()
+					return ferr
+				}
+				_, err = io.CopyBuffer(a.wc, f, copyBuf)
+				f.Close()
 			}
-			// CopyBuffer гарантирует использование нашего 1МБ окна
-			_, err = io.CopyBuffer(a.wc, f, copyBuf)
-			f.Close()
 			if err != nil {
 				a.m.Unlock()
 				return err
@@ -525,6 +607,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		a.m.Unlock()
 	}
 
+	wg.Wait()
 	return nil
 }
 

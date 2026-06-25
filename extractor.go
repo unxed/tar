@@ -2,7 +2,6 @@ package tar
 
 import (
     "unsafe"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"syscall"
 
 	"golang.org/x/sync/errgroup"
+	"sync"
 )
 
 type ExtractorOption func(*extractorOptions) error
@@ -106,6 +106,26 @@ func putSparseBuf(b []byte) {
 	select {
 	case sparseBufCh <- b:
 	default:
+	}
+}
+var smallFilePool = sync.Pool{}
+
+func getSmallBuffer(size int64) *[]byte {
+	v := smallFilePool.Get()
+	if v != nil {
+		b := v.(*[]byte)
+		if int64(cap(*b)) >= size {
+			*b = (*b)[:size]
+			return b
+		}
+	}
+	b := make([]byte, size)
+	return &b
+}
+
+func putSmallBuffer(b *[]byte) {
+	if b != nil && int64(cap(*b)) <= 16*1024*1024 {
+		smallFilePool.Put(b)
 	}
 }
 
@@ -275,11 +295,12 @@ func WithExtractorChownErrorHandler(fn func(name string, err error) error) Extra
 }
 
 type Extractor struct {
-	rc      *ReadCloser
-	chroot  string
-	options extractorOptions
-	written int64
-	entries int64
+	rc       *ReadCloser
+	chroot   string
+	options  extractorOptions
+	written  int64
+	entries  int64
+	dirCache sync.Map
 }
 
 func (e *Extractor) Written() (bytes, entries int64) {
@@ -297,7 +318,7 @@ func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor,
 		options: extractorOptions{
 			concurrency:           runtime.GOMAXPROCS(0),
 			maxFileSize:           0,   // unlimited
-			maxDecompressionRatio: 500, // 500:1 is a safe default for most data
+			maxDecompressionRatio: 10000, // 10000:1 default
 			xattrs:                true,
 			chownErrorHandler: func(name string, err error) error {
 				if pe, ok := err.(*os.PathError); ok {
@@ -542,22 +563,28 @@ func (e *Extractor) Extract(ctx context.Context) error {
 
 			if hdr.Size <= memBufferLimit {
 				// Small files: read into memory and delegate I/O to worker pool
-				var data []byte
+				var dataPtr *[]byte
 				if hdr.Size > 0 {
-					data = make([]byte, hdr.Size)
-					if _, err = io.ReadFull(e.rc, data); err != nil {
+					dataPtr = getSmallBuffer(hdr.Size)
+					if _, err = io.ReadFull(e.rc, *dataPtr); err != nil {
 						return err
 					}
 				}
 
-				if strings.HasSuffix(hdr.Name, ":Zone.Identifier") && len(data) > 0 {
-					data = sanitizeZoneIdentifier(data)
-					hdr.Size = int64(len(data))
+				if strings.HasSuffix(hdr.Name, ":Zone.Identifier") && dataPtr != nil && len(*dataPtr) > 0 {
+					sanitized := sanitizeZoneIdentifier(*dataPtr)
+					dataPtr = &sanitized
+					hdr.Size = int64(len(sanitized))
 				}
 
-				h, p, d := *hdr, path, data // Local copies for worker
+				h, p := *hdr, path // Local copies for worker
 				select {
 				case taskCh <- func() error {
+					defer func() {
+						if dataPtr != nil {
+							putSmallBuffer(dataPtr)
+						}
+					}()
 					writePath := p
 					hdr := &h
 					if e.options.safeWrites {
@@ -581,11 +608,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						return err
 					}
 
-					if len(d) > 0 {
+					if dataPtr != nil && len(*dataPtr) > 0 {
 						if e.options.sparse {
-							err = copySparseBytes(f, d)
+							err = copySparseBytes(f, *dataPtr)
 						} else {
-							_, err = io.Copy(f, bytes.NewReader(d))
+							_, err = f.Write(*dataPtr)
 						}
 					}
 					f.Close()
@@ -845,8 +872,12 @@ func (e *Extractor) linksToDirs(targetPath string) error {
 // synthesizeDir guarantees that a directory exists on disk,
 // recovering missing structures and resolving file/directory conflicts on the fly.
 func (e *Extractor) synthesizeDir(targetDir string) error {
+	if _, ok := e.dirCache.Load(targetDir); ok {
+		return nil
+	}
 	err := os.MkdirAll(targetDir, 0755)
 	if err == nil {
+		e.dirCache.Store(targetDir, struct{}{})
 		return nil
 	}
 
