@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/klauspost/compress v1.18.7-0.20260521203646-ecdb779d8745
+	github.com/klauspost/pgzip v1.2.6
 	github.com/ncruces/go-sqlite3 v0.22.0
 	github.com/unxed/par2 v0.1.2
 	github.com/unxed/xz v0.1.23

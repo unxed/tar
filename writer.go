@@ -4,9 +4,10 @@ import (
 	"archive/tar"
 	"io"
 	"os"
-	"github.com/unxed/xz"
-	"github.com/klauspost/compress/gzip"
+
 	"github.com/klauspost/compress/zstd"
+	"github.com/klauspost/pgzip"
+	"github.com/unxed/xz"
 )
 
 type WriteCloser struct {
@@ -86,7 +87,7 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 	if method != Store {
 		if wopts.level != 0 {
 			if method == GZIP {
-				comp, err = gzip.NewWriterLevel(wr, wopts.level)
+				comp, err = pgzip.NewWriterLevel(wr, wopts.level)
 			} else if method == ZSTD {
 				comp, err = zstd.NewWriter(wr, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(wopts.level)))
 			} else if method == XZ {

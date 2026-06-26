@@ -14,6 +14,7 @@ import (
 	"github.com/klauspost/compress/flate"
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
+	"github.com/klauspost/pgzip"
 	"github.com/unxed/xz"
 )
 
@@ -511,7 +512,7 @@ func (zstdFormat) ResumeFromBlockOffset(r io.ReaderAt, bo *BlockOffset) (io.Read
 }
 
 func init() {
-	compressors.Store(GZIP, Compressor(func(w io.Writer) (io.WriteCloser, error) { return gzip.NewWriter(w), nil }))
+	compressors.Store(GZIP, Compressor(func(w io.Writer) (io.WriteCloser, error) { return pgzip.NewWriter(w), nil }))
 	decompressors.Store(GZIP, gzipFormat{})
 
 	decompressors.Store(BZIP2, bzip2Format{})
