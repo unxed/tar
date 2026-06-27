@@ -121,25 +121,27 @@ func nextPowerOf2(n int64) int64 {
 	return n
 }
 
-var smallFilePool = sync.Pool{}
+type buffer64K [65536]byte
 
-func getSmallBuffer(size int64) *[]byte {
-	targetCap := nextPowerOf2(size)
-	v := smallFilePool.Get()
-	if v != nil {
-		b := v.(*[]byte)
-		if int64(cap(*b)) >= targetCap {
-			*b = (*b)[:size]
-			return b
-		}
-	}
-	b := make([]byte, size, targetCap)
-	return &b
+var smallFilePool = sync.Pool{
+	New: func() any {
+		return new(buffer64K)
+	},
 }
 
-func putSmallBuffer(b *[]byte) {
-	if b != nil && int64(cap(*b)) <= 16*1024*1024 {
-		smallFilePool.Put(b)
+func getSmallBuffer(size int64) []byte {
+	if size <= 65536 {
+		b := smallFilePool.Get().(*buffer64K)
+		return b[:size]
+	}
+	return make([]byte, size)
+}
+
+func putSmallBuffer(b []byte) {
+	if cap(b) == 65536 {
+		b = b[:1] // Safely slice to prevent out of bounds panic if len was 0
+		ptr := (*buffer64K)(unsafe.Pointer(&b[0]))
+		smallFilePool.Put(ptr)
 	}
 }
 
@@ -575,25 +577,24 @@ func (e *Extractor) Extract(ctx context.Context) error {
 
 			if hdr.Size <= memBufferLimit {
 				// Small files: read into memory and delegate I/O to worker pool
-				var dataPtr *[]byte
+				var dataPtr []byte
 				if hdr.Size > 0 {
 					dataPtr = getSmallBuffer(hdr.Size)
-					if _, err = io.ReadFull(e.rc, *dataPtr); err != nil {
+					if _, err = io.ReadFull(e.rc, dataPtr); err != nil {
 						return err
 					}
 				}
 
-				if strings.HasSuffix(hdr.Name, ":Zone.Identifier") && dataPtr != nil && len(*dataPtr) > 0 {
-					sanitized := sanitizeZoneIdentifier(*dataPtr)
-					dataPtr = &sanitized
-					hdr.Size = int64(len(sanitized))
+				if strings.HasSuffix(hdr.Name, ":Zone.Identifier") && len(dataPtr) > 0 {
+					dataPtr = sanitizeZoneIdentifier(dataPtr)
+					hdr.Size = int64(len(dataPtr))
 				}
 
 				h, p := *hdr, path // Local copies for worker
 				select {
 				case taskCh <- func() error {
 					defer func() {
-						if dataPtr != nil {
+						if len(dataPtr) > 0 {
 							putSmallBuffer(dataPtr)
 						}
 					}()
@@ -620,12 +621,15 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						return err
 					}
 
-					if dataPtr != nil && len(*dataPtr) > 0 {
+					if len(dataPtr) > 0 {
 						if e.options.sparse {
-							err = copySparseBytes(f, *dataPtr)
+							err = copySparseBytes(f, dataPtr)
 						} else {
-							_, err = f.Write(*dataPtr)
+							_, err = f.Write(dataPtr)
 						}
+					}
+					if err == nil {
+						f.Chmod(os.FileMode(hdr.Mode))
 					}
 					f.Close()
 					if err != nil {
@@ -640,7 +644,6 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					if !e.options.noTimes {
 						lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
 					}
-					os.Chmod(writePath, os.FileMode(hdr.Mode))
 
 					uid, gid := resolveIds(hdr, e.options.numericOwner)
 					err = lchown(writePath, uid, gid)
@@ -705,6 +708,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					_, err = io.CopyBuffer(f, r, buf)
 					putSparseBuf(buf)
 				}
+				if err == nil {
+					f.Chmod(os.FileMode(hdr.Mode))
+				}
 				if err != nil {
 					return err
 				}
@@ -723,7 +729,6 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					if !e.options.noTimes {
 						lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
 					}
-					os.Chmod(writePath, os.FileMode(hdr.Mode))
 
 					uid, gid := resolveIds(hdr, e.options.numericOwner)
 					err := lchown(writePath, uid, gid)

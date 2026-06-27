@@ -446,7 +446,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		rel     string
 		fi      os.FileInfo
 		link    string
-		dataPtr *[]byte
+		dataPtr []byte
 		err     error
 		done    chan struct{}
 	}
@@ -466,7 +466,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 						task.dataPtr = getSmallBuffer(size)
 						f, err := os.Open(task.path)
 						if err == nil {
-							_, task.err = io.ReadFull(f, *task.dataPtr)
+							_, task.err = io.ReadFull(f, task.dataPtr)
 							f.Close()
 						} else {
 							task.err = err
@@ -606,12 +606,12 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 					peekSize = task.fi.Size()
 				}
 				var peekBuf []byte
-				if task.dataPtr != nil {
-					l := int64(len(*task.dataPtr))
+				if len(task.dataPtr) > 0 {
+					l := int64(len(task.dataPtr))
 					if l > peekSize {
 						l = peekSize
 					}
-					peekBuf = (*task.dataPtr)[:l]
+					peekBuf = task.dataPtr[:l]
 				} else {
 					f, err := os.Open(task.path)
 					if err == nil {
@@ -640,8 +640,8 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		}
 
 		if task.fi.Mode().IsRegular() && hdr.Typeflag != TypeLink {
-			if task.dataPtr != nil {
-				_, err = a.wc.Write(*task.dataPtr)
+			if len(task.dataPtr) > 0 {
+				_, err = a.wc.Write(task.dataPtr)
 				putSmallBuffer(task.dataPtr)
 			} else if task.fi.Size() > 0 {
 				f, ferr := os.Open(task.path)
