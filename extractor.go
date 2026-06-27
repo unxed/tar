@@ -414,10 +414,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			name = stripped
 		}
 
-		path, err := filepath.Abs(filepath.Join(e.chroot, name))
-		if err != nil {
-			return err
+		cleanName := filepath.ToSlash(filepath.Clean(name))
+		if strings.HasPrefix(cleanName, "../") || strings.HasPrefix(cleanName, "/") {
+			return fmt.Errorf("%s: invalid path (traversal or absolute)", name)
 		}
+		path := filepath.Join(e.chroot, cleanName)
 
 		prefix := e.chroot
 		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
