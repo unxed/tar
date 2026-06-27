@@ -195,7 +195,7 @@ func TestGzipMultistreamResumption(t *testing.T) {
 	multistreamGzip := gzipBuf.Bytes()
 
 	// 2. Perform sequential on-the-fly index tracking
-	gtr, err := newGzipIndexTrackingReader(bytes.NewReader(multistreamGzip))
+	gtr, err := NewGzipIndexTrackingReader(bytes.NewReader(multistreamGzip))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestGzipHeaderMetadataParsing(t *testing.T) {
 	}
 	gw.Close()
 
-	gtr, err := newGzipIndexTrackingReader(bytes.NewReader(gzipBuf.Bytes()))
+	gtr, err := NewGzipIndexTrackingReader(bytes.NewReader(gzipBuf.Bytes()))
 	if err != nil {
 		t.Fatalf("Failed to initialize tracking reader with metadata headers: %v", err)
 	}
