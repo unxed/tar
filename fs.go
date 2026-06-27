@@ -97,7 +97,7 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		if errLocate == nil && shadowSize > 0 {
 			f, errCreate := os.OpenFile(indexPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
 			if errCreate == nil {
-				errShadow := extractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
+				errShadow := ExtractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
 				f.Close()
 				if errShadow == nil {
 					isTemporaryIndex = true

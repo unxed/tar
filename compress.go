@@ -62,7 +62,8 @@ var (
 type gzipFormat struct{}
 
 func (gzipFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
-	return pgzip.NewReader(r)
+	br := bufio.NewReaderSize(r, 1024*1024)
+	return gzip.NewReader(br)
 }
 
 type trackingByteReader struct {

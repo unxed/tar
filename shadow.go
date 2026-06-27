@@ -142,8 +142,8 @@ func extractShadowIndex(ra io.ReaderAt, fileSize int64, method uint16) ([]byte, 
 	return extractShadowFile(ra, fileSize, method, ".tarext/ratarmount/index.sqlite")
 }
 
-// extractShadowFile extracts a specific file payload from the Stream 2 metadata shadow stream.
-func extractShadowFileToWriter(ra io.ReaderAt, fileSize int64, method uint16, targetName string, out io.Writer) error {
+// ExtractShadowFileToWriter extracts a specific file payload from the Stream 2 metadata shadow stream.
+func ExtractShadowFileToWriter(ra io.ReaderAt, fileSize int64, method uint16, targetName string, out io.Writer) error {
 	shadowStart, shadowSize, err := LocateShadowStream(ra, fileSize, method)
 	if err != nil || shadowSize == 0 {
 		return io.ErrUnexpectedEOF
@@ -188,7 +188,7 @@ func extractShadowFileToWriter(ra io.ReaderAt, fileSize int64, method uint16, ta
 }
 func extractShadowFile(ra io.ReaderAt, fileSize int64, method uint16, targetName string) ([]byte, error) {
 	var buf bytes.Buffer
-	err := extractShadowFileToWriter(ra, fileSize, method, targetName, &buf)
+	err := ExtractShadowFileToWriter(ra, fileSize, method, targetName, &buf)
 	if err != nil {
 		return nil, err
 	}
