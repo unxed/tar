@@ -59,7 +59,11 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 			mvr.Close()
 			return nil, err
 		}
-		rd = makeBufferedPipelineReader(dcomp)
+		if method == GZIP {
+			rd = makeBufferedPipelineReader(dcomp)
+		} else {
+			rd = dcomp
+		}
 	}
 
 	return &ReadCloser{
