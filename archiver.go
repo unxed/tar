@@ -199,6 +199,26 @@ func NewArchiver(filename string, chroot string, opts ...ArchiverOption) (*Archi
 	return a, nil
 }
 
+func analyzeBlock(p []byte) (store, huffmanOnly bool) {
+	if len(p) < 4096 {
+		return false, false
+	}
+	var freq [256]uint32
+	unique := 0
+	for _, b := range p {
+		if freq[b] == 0 {
+			unique++
+		}
+		freq[b]++
+	}
+	if unique > 224 {
+		return true, false
+	}
+	if unique <= 136 {
+		return false, true
+	}
+	return false, false
+}
 func (a *Archiver) closeInternal() error {
 	var sizeThreshold int64 = 4 * 1024 * 1024
 	for _, arg := range os.Args {
@@ -578,6 +598,41 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		}
 
 		a.m.Lock()
+		targetLevel := a.wc.defaultLevel
+		if task.fi.Mode().IsRegular() && task.link == "" && task.fi.Size() >= 1024*1024 {
+			if a.options.method == GZIP {
+				peekSize := int64(65536)
+				if task.fi.Size() < peekSize {
+					peekSize = task.fi.Size()
+				}
+				var peekBuf []byte
+				if task.dataPtr != nil {
+					l := int64(len(*task.dataPtr))
+					if l > peekSize {
+						l = peekSize
+					}
+					peekBuf = (*task.dataPtr)[:l]
+				} else {
+					f, err := os.Open(task.path)
+					if err == nil {
+						peekBuf = make([]byte, peekSize)
+						n, _ := io.ReadFull(f, peekBuf)
+						peekBuf = peekBuf[:n]
+						f.Close()
+					}
+				}
+				if len(peekBuf) > 0 {
+					store, huffman := analyzeBlock(peekBuf)
+					if store {
+						targetLevel = 0 // NoCompression
+					} else if huffman {
+						targetLevel = -2 // HuffmanOnly
+					}
+				}
+			}
+		}
+		a.wc.SetCompressionLevel(targetLevel)
+
 		err = a.wc.WriteHeader(hdr)
 		if err != nil {
 			a.m.Unlock()

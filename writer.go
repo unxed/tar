@@ -24,6 +24,8 @@ type WriteCloser struct {
 	gzPoints      []gzPoint
 	zstdBlocks    []BlockOffset
 	splitSize     int64
+	defaultLevel  int
+	currentLevel  int
 }
 
 // CreateWriter creates a new TAR or compressed TAR file.
@@ -126,6 +128,15 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 		compTracker:   compTracker,
 		seenParents:   make(map[string]bool),
 	}
+	wc.defaultLevel = wopts.level
+	if wc.defaultLevel == 0 {
+		if method == GZIP {
+			wc.defaultLevel = -1
+		} else if method == ZSTD {
+			wc.defaultLevel = 3
+		}
+	}
+	wc.currentLevel = wc.defaultLevel
 
 	if wopts.indexPath != "" {
 		os.Remove(wopts.indexPath)
@@ -200,7 +211,24 @@ func (wc *WriteCloser) Write(p []byte) (int, error) {
 	return n, err
 }
 
+func (wc *WriteCloser) SetCompressionLevel(level int) error {
+	if wc.method != GZIP && wc.method != ZSTD {
+		return nil
+	}
+	if wc.currentLevel == level {
+		return nil
+	}
+	wc.Writer.Flush() // Flush pending tar padding to the current compressor
+	wc.currentLevel = level
+	wc.createSeekPointWithLevel(level)
+	return nil
+}
+
 func (wc *WriteCloser) createSeekPoint() {
+	wc.createSeekPointWithLevel(wc.currentLevel)
+}
+
+func (wc *WriteCloser) createSeekPointWithLevel(level int) {
 	if wc.method == ZSTD || wc.method == GZIP || wc.method == XZ {
 		// We close the current member/frame and start a new one.
 		// This ensures the next byte in the output stream is a valid frame header
@@ -213,7 +241,7 @@ func (wc *WriteCloser) createSeekPoint() {
 				BlockOffset: wc.compTracker.pos,
 				DataOffset:  wc.uncompTracker.pos,
 			})
-		} else {
+		} else if wc.method == GZIP {
 			wc.gzPoints = append(wc.gzPoints, gzPoint{
 				compOffset:   uint64(wc.compTracker.pos),
 				uncompOffset: uint64(wc.uncompTracker.pos),
@@ -222,8 +250,17 @@ func (wc *WriteCloser) createSeekPoint() {
 			})
 		}
 
-		ci, _ := compressors.Load(wc.method)
-		newComp, err := ci.(Compressor)(wc.compTracker)
+		var newComp io.WriteCloser
+		var err error
+		if wc.method == GZIP {
+			newComp, err = pgzip.NewWriterLevel(wc.compTracker, level)
+		} else if wc.method == ZSTD {
+			newComp, err = zstd.NewWriter(wc.compTracker, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
+		} else if wc.method == XZ {
+			ci, _ := compressors.Load(wc.method)
+			newComp, err = ci.(Compressor)(wc.compTracker)
+		}
+
 		if err == nil {
 			wc.comp = newComp
 			// Update the target of our tracking wrapper so the tar.Writer
