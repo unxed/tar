@@ -19,12 +19,19 @@ func IndexArchive(archivePath, indexPath string) error {
 	if err != nil { return err }
 	var rd io.Reader = io.NewSectionReader(ra, 0, size)
 	if method != Store {
-		di, ok := decompressors.Load(method)
-		if !ok { return ErrAlgorithm }
-		dcomp, err := di.(Decompressor).Decompress(rd)
-		if err != nil { return err }
-		defer dcomp.Close()
-		rd = dcomp
+		if method == GZIP {
+			gtr, err := NewGzipIndexTrackingReader(rd)
+			if err != nil { return err }
+			defer gtr.Close()
+			rd = gtr
+		} else {
+			di, ok := decompressors.Load(method)
+			if !ok { return ErrAlgorithm }
+			dcomp, err := di.(Decompressor).Decompress(rd)
+			if err != nil { return err }
+			defer dcomp.Close()
+			rd = dcomp
+		}
 	}
 
 	// ОПТИМИЗАЦИЯ: Буферизируем поток перед передачей в TAR-индексатор.

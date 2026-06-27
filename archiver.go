@@ -443,8 +443,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 				if ctx.Err() == nil && task.fi.Mode().IsRegular() && task.link == "" {
 					size := task.fi.Size()
 					if size > 0 && size <= 16*1024*1024 {
-						buf := make([]byte, size)
-						task.dataPtr = &buf
+						task.dataPtr = getSmallBuffer(size)
 						f, err := os.Open(task.path)
 						if err == nil {
 							_, task.err = io.ReadFull(f, *task.dataPtr)
@@ -588,6 +587,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 		if task.fi.Mode().IsRegular() && hdr.Typeflag != TypeLink {
 			if task.dataPtr != nil {
 				_, err = a.wc.Write(*task.dataPtr)
+				putSmallBuffer(task.dataPtr)
 			} else if task.fi.Size() > 0 {
 				f, ferr := os.Open(task.path)
 				if ferr != nil {

@@ -91,35 +91,49 @@ func WithExtractorSparse(b bool) ExtractorOption {
 	}
 }
 
-var sparseBufCh = make(chan []byte, 64)
+var sparseBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 1024*1024)
+		return &b
+	},
+}
 
 func getSparseBuf() []byte {
-	select {
-	case b := <-sparseBufCh:
-		return b
-	default:
-		return make([]byte, 1024*1024)
-	}
+	return *(sparseBufPool.Get().(*[]byte))
 }
 
 func putSparseBuf(b []byte) {
-	select {
-	case sparseBufCh <- b:
-	default:
-	}
+	sparseBufPool.Put(&b)
 }
+
+func nextPowerOf2(n int64) int64 {
+	if n <= 4096 {
+		return 4096
+	}
+	n--
+	n |= n >> 1
+	n |= n >> 2
+	n |= n >> 4
+	n |= n >> 8
+	n |= n >> 16
+	n |= n >> 32
+	n++
+	return n
+}
+
 var smallFilePool = sync.Pool{}
 
 func getSmallBuffer(size int64) *[]byte {
+	targetCap := nextPowerOf2(size)
 	v := smallFilePool.Get()
 	if v != nil {
 		b := v.(*[]byte)
-		if int64(cap(*b)) >= size {
+		if int64(cap(*b)) >= targetCap {
 			*b = (*b)[:size]
 			return b
 		}
 	}
-	b := make([]byte, size)
+	b := make([]byte, size, targetCap)
 	return &b
 }
 

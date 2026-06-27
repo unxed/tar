@@ -62,7 +62,7 @@ var (
 type gzipFormat struct{}
 
 func (gzipFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
-	return newGzipIndexTrackingReader(r)
+	return pgzip.NewReader(r)
 }
 
 type trackingByteReader struct {
@@ -108,7 +108,7 @@ type gzipIndexTrackingReader struct {
 	err              error
 }
 
-func newGzipIndexTrackingReader(r io.Reader) (*gzipIndexTrackingReader, error) {
+func NewGzipIndexTrackingReader(r io.Reader) (*gzipIndexTrackingReader, error) {
 	br := bufio.NewReaderSize(r, 1024*1024) // 1MB buffer instead of default 4KB
 	tr := &trackingByteReader{r: br}
 	gtr := &gzipIndexTrackingReader{
@@ -489,7 +489,7 @@ func newTarZstdReader(r io.Reader) (io.ReadCloser, error) {
 	dec, _ := zstdDecoderPool.Get().(*zstd.Decoder)
 	if dec == nil {
 		var err error
-		dec, err = zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(512<<20), zstd.WithDecoderMaxMemory(512<<20))
+		dec, err = zstd.NewReader(nil, zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxWindow(512<<20), zstd.WithDecoderMaxMemory(512<<20))
 		if err != nil {
 			return nil, err
 		}
