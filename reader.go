@@ -5,6 +5,8 @@ import (
 	"io"
 	"errors"
 	"os"
+	"sync"
+	"unsafe"
 )
 
 type ReadCloser struct {
@@ -57,7 +59,7 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 			mvr.Close()
 			return nil, err
 		}
-		rd = dcomp
+		rd = makeBufferedPipelineReader(dcomp)
 	}
 
 	return &ReadCloser{
@@ -66,6 +68,103 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 		dcomp:     dcomp,
 		rawReader: rd,
 	}, nil
+}
+
+type bufferedPipe struct {
+	ch      chan []byte
+	errCh   chan error
+	current []byte
+	r       io.ReadCloser
+	err     error
+}
+
+var chunkPool = sync.Pool{
+	New: func() any {
+		return new(buffer64K)
+	},
+}
+
+func makeBufferedPipelineReader(r io.ReadCloser) io.ReadCloser {
+	ch := make(chan []byte, 16)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(ch)
+		for {
+			bufPtr := chunkPool.Get().(*buffer64K)
+			n, err := io.ReadFull(r, bufPtr[:])
+			if n > 0 {
+				ch <- bufPtr[:n]
+			} else {
+				chunkPool.Put(bufPtr)
+			}
+			if err != nil {
+				r.Close()
+				if err != io.EOF && err != io.ErrUnexpectedEOF {
+					errCh <- err
+				} else {
+					errCh <- io.EOF
+				}
+				return
+			}
+		}
+	}()
+
+	return &bufferedPipe{
+		ch:    ch,
+		errCh: errCh,
+		r:     r,
+	}
+}
+
+func (bp *bufferedPipe) Read(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+
+	if len(bp.current) == 0 {
+		if bp.err != nil {
+			return 0, bp.err
+		}
+		var ok bool
+		bp.current, ok = <-bp.ch
+		if !ok {
+			select {
+			case err := <-bp.errCh:
+				bp.err = err
+			default:
+				bp.err = io.EOF
+			}
+			return 0, bp.err
+		}
+	}
+
+	n := copy(b, bp.current)
+	leftover := bp.current[n:]
+	if len(leftover) == 0 {
+		if cap(bp.current) == 65536 {
+			fullSlice := bp.current[:65536]
+			ptr := (*buffer64K)(unsafe.Pointer(&fullSlice[0]))
+			chunkPool.Put(ptr)
+		}
+		bp.current = nil
+	} else {
+		bp.current = leftover
+	}
+
+	return n, nil
+}
+
+func (bp *bufferedPipe) Close() error {
+	bp.r.Close()
+	for b := range bp.ch {
+		if cap(b) == 65536 {
+			fullSlice := b[:65536]
+			ptr := (*buffer64K)(unsafe.Pointer(&fullSlice[0]))
+			chunkPool.Put(ptr)
+		}
+	}
+	return nil
 }
 
 func (rc *ReadCloser) Next() (*Header, error) {
