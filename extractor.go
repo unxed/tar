@@ -122,27 +122,42 @@ func nextPowerOf2(n int64) int64 {
 }
 
 type buffer64K [65536]byte
-
-var smallFilePool = sync.Pool{
-	New: func() any {
-		return new(buffer64K)
-	},
-}
+var memPools [25]sync.Pool
 
 func getSmallBuffer(size int64) []byte {
-	if size <= 65536 {
-		b := smallFilePool.Get().(*buffer64K)
-		return b[:size]
+	if size <= 0 {
+		return nil
 	}
-	return make([]byte, size)
+	if size > 16*1024*1024 {
+		return make([]byte, size)
+	}
+	var idx int
+	for idx = 0; (1 << idx) < size; idx++ {
+	}
+
+	if v := memPools[idx].Get(); v != nil {
+		ptr := v.(*[]byte)
+		return (*ptr)[:size]
+	}
+	b := make([]byte, 1<<idx)
+	return b[:size]
 }
 
 func putSmallBuffer(b []byte) {
-	if cap(b) == 65536 {
-		b = b[:1] // Safely slice to prevent out of bounds panic if len was 0
-		ptr := (*buffer64K)(unsafe.Pointer(&b[0]))
-		smallFilePool.Put(ptr)
+	c := cap(b)
+	if c == 0 || c > 16*1024*1024 {
+		return
 	}
+	// Убеждаемся, что емкость — точная степень двойки
+	if (c & (c - 1)) != 0 {
+		return
+	}
+	var idx int
+	for idx = 0; (1 << idx) < c; idx++ {
+	}
+
+	full := b[:c]
+	memPools[idx].Put(&full)
 }
 
 func isAllZeros(p []byte) bool {

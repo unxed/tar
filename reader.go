@@ -2,6 +2,7 @@ package tar
 
 import (
 	"archive/tar"
+	"bufio"
 	"io"
 	"errors"
 	"os"
@@ -62,7 +63,7 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 		if method == GZIP {
 			rd = makeBufferedPipelineReader(dcomp)
 		} else {
-			rd = dcomp
+			rd = bufio.NewReaderSize(dcomp, 1024*1024)
 		}
 	}
 
