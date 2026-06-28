@@ -2,11 +2,15 @@ package tar
 
 import (
 	"archive/tar"
-    "bufio"
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
 	"os"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/klauspost/pgzip"
+	"github.com/unxed/xz"
 )
 
 type AppendMode int
@@ -28,7 +32,7 @@ type Updater struct {
 }
 
 // NewUpdater opens a .tar or compressed .tar file for appending.
-func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
+func NewUpdater(f *os.File, mode AppendMode, opts ...WriterOption) (*Updater, error) {
 	if mode != APPEND_MODE_OVERWRITE {
 		return nil, errors.New("tar: only APPEND_MODE_OVERWRITE is supported")
 	}
@@ -106,13 +110,40 @@ func NewUpdater(f *os.File, mode AppendMode) (*Updater, error) {
 	var comp io.WriteCloser
 
 	if isCompressed {
-		// Initialize the appropriate compressor starting from truncated position
-		ci, ok := compressors.Load(method)
-		if !ok {
-			return nil, ErrAlgorithm
+		var wopts writerOptions
+		for _, o := range opts {
+			o(&wopts)
 		}
-		var err error
-		comp, err = ci.(Compressor)(f)
+
+		if wopts.level != 0 {
+			if method == GZIP {
+				comp, err = pgzip.NewWriterLevel(f, wopts.level)
+			} else if method == ZSTD {
+				comp, err = zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(wopts.level)))
+			} else if method == XZ {
+				dictCap := 8 * 1024 * 1024
+				if wopts.level > 0 && wopts.level <= 9 {
+					lzmaDictCapExps := []uint{18, 20, 21, 22, 22, 23, 23, 24, 25, 26}
+					dictCap = 1 << lzmaDictCapExps[wopts.level]
+				}
+				config := xz.WriterConfig{
+					CheckSum: xz.CRC64,
+					DictCap:  dictCap,
+				}
+				if err = config.Verify(); err == nil {
+					comp, err = config.NewWriter(f)
+				}
+			}
+		}
+
+		if comp == nil && err == nil {
+			ci, ok := compressors.Load(method)
+			if !ok {
+				return nil, ErrAlgorithm
+			}
+			comp, err = ci.(Compressor)(f)
+		}
+
 		if err != nil {
 			return nil, err
 		}

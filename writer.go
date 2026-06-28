@@ -93,10 +93,15 @@ func CreateWriter(name string, method uint16, opts ...WriterOption) (*WriteClose
 			} else if method == ZSTD {
 				comp, err = zstd.NewWriter(wr, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(wopts.level)))
 			} else if method == XZ {
+				dictCap := 8 * 1024 * 1024
+				if wopts.level > 0 && wopts.level <= 9 {
+					lzmaDictCapExps := []uint{18, 20, 21, 22, 22, 23, 23, 24, 25, 26}
+					dictCap = 1 << lzmaDictCapExps[wopts.level]
+				}
 				config := xz.WriterConfig{
 					CheckSum: xz.CRC64,
+					DictCap:  dictCap,
 				}
-				// XZ levels are roughly mapped to internal presets
 				if err = config.Verify(); err == nil {
 					comp, err = config.NewWriter(wr)
 				}
