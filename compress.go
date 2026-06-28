@@ -490,7 +490,11 @@ func newTarZstdReader(r io.Reader) (io.ReadCloser, error) {
 	dec, _ := zstdDecoderPool.Get().(*zstd.Decoder)
 	if dec == nil {
 		var err error
-		dec, err = zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(512<<20), zstd.WithDecoderMaxMemory(512<<20))
+		concurrency := runtime.GOMAXPROCS(0) / 2
+		if concurrency < 1 {
+			concurrency = 1
+		}
+		dec, err = zstd.NewReader(nil, zstd.WithDecoderConcurrency(concurrency), zstd.WithDecoderMaxWindow(512<<20), zstd.WithDecoderMaxMemory(512<<20))
 		if err != nil {
 			return nil, err
 		}
