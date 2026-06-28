@@ -7,7 +7,7 @@ require (
 	github.com/klauspost/pgzip v1.2.6
 	github.com/ncruces/go-sqlite3 v0.22.0
 	github.com/unxed/par2 v0.1.2
-	github.com/unxed/xz v0.1.32
+	github.com/unxed/xz v0.1.35
 	golang.org/x/sync v0.10.0
 	golang.org/x/sys v0.29.0
 )
