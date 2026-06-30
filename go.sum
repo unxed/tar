@@ -16,8 +16,8 @@ github.com/tetratelabs/wazero v1.8.2 h1:yIgLR/b2bN31bjxwXHD8a3d+BogigR952csSDdLY
 github.com/tetratelabs/wazero v1.8.2/go.mod h1:yAI0XTsMBhREkM/YDAK/zNou3GoiAce1P6+rp/wQhjs=
 github.com/unxed/par2 v0.1.2 h1:epfbY8bYap66zePkRrfSOunB4UqWou7vJEfSlARsCLM=
 github.com/unxed/par2 v0.1.2/go.mod h1:8sw226vMwuacnZjgjTj0mCn2SBddYmNsUEXCNT1Ttxg=
-github.com/unxed/xz v0.1.37 h1:IKff+LwJnrM7t9g0cqRSQ2ftVafiIlRjMITIz840GV0=
-github.com/unxed/xz v0.1.37/go.mod h1:+i9oua9YYxBJGNLh9s4itPLtCpCXs8X7M8/SNU4FeZc=
+github.com/unxed/xz v0.1.38 h1:VUCGMhmSh3ys6xQA2NPjxhihfw1J1MDZrsvupLS7bdU=
+github.com/unxed/xz v0.1.38/go.mod h1:+i9oua9YYxBJGNLh9s4itPLtCpCXs8X7M8/SNU4FeZc=
 golang.org/x/sync v0.10.0 h1:3NQrjDixjgGwUOCaF8w2+VYHv0Ve/vGYSbdkTa98gmQ=
 golang.org/x/sync v0.10.0/go.mod h1:Czt+wKu1gCyEFDUtn0jG5QVvpJ6rzVqr5aXyt9drQfk=
 golang.org/x/sys v0.29.0 h1:TPYlXGxvx1MGTn2GiZDhnjPA9wZzZeGKHHmKhHYvgaU=
