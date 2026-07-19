@@ -64,11 +64,16 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		o(&options)
 	}
 
+	autoSidecarPath := false
 	if indexPath == "" {
 		var err error
 		indexPath, err = GetStandardIndexPath(archivePath)
 		if err != nil {
 			return nil, err
+		}
+		absPath, _ := filepath.Abs(archivePath)
+		if indexPath == absPath+".index.sqlite" {
+			autoSidecarPath = true
 		}
 	}
 
@@ -90,40 +95,61 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		return nil, err
 	}
 
-	// Try to find embedded F4 Shadow Index
 	isTemporaryIndex := false
-	if _, errStat := os.Stat(indexPath); os.IsNotExist(errStat) {
-		_, shadowSize, errLocate := LocateShadowStream(ra, size, method)
-		if errLocate == nil && shadowSize > 0 {
-			f, errCreate := os.OpenFile(indexPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
-			if errCreate == nil {
-				errShadow := ExtractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
-				f.Close()
-				if errShadow == nil {
-					isTemporaryIndex = true
+	var createdIndex bool
+
+	prepareIndex := func(targetIndexPath string) (*Index, error) {
+		createdIndex = false
+		if _, errStat := os.Stat(targetIndexPath); os.IsNotExist(errStat) {
+			createdIndex = true
+			_, shadowSize, errLocate := LocateShadowStream(ra, size, method)
+			if errLocate == nil && shadowSize > 0 {
+				f, errCreate := os.OpenFile(targetIndexPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
+				if errCreate == nil {
+					errShadow := ExtractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
+					f.Close()
+					if errShadow == nil {
+						isTemporaryIndex = true
+					} else {
+						os.Remove(targetIndexPath)
+						if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
+							return nil, errIdx
+						}
+					}
 				} else {
-					os.Remove(indexPath)
-					if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
-						mvr.Close()
+					if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
 						return nil, errIdx
 					}
 				}
 			} else {
-				if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
-					mvr.Close()
+				// No embedded shadow stream found, build index by scanning the archive
+				if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
 					return nil, errIdx
 				}
 			}
-		} else {
-			// No embedded shadow stream found, build index by scanning the archive
-			if errIdx := IndexArchive(archivePath, indexPath); errIdx != nil {
-				mvr.Close()
-				return nil, errIdx
+		}
+
+		idx, err := OpenIndex(targetIndexPath)
+		if err != nil {
+			if createdIndex {
+				os.Remove(targetIndexPath)
 			}
+			return nil, err
+		}
+		return idx, nil
+	}
+
+	idx, err := prepareIndex(indexPath)
+	if err != nil && autoSidecarPath {
+		// Fallback to cache directory if sidecar SQLite fails (e.g. WSL disk I/O error)
+		cachePath, cerr := GetCacheIndexPath(archivePath)
+		if cerr == nil && cachePath != indexPath {
+			isTemporaryIndex = false
+			indexPath = cachePath
+			idx, err = prepareIndex(indexPath)
 		}
 	}
 
-	idx, err := OpenIndex(indexPath)
 	if err != nil {
 		mvr.Close()
 		return nil, err
@@ -145,6 +171,47 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		password:         options.password,
 	}, nil
 }
+// GetCacheIndexPath returns the path to the cache directory for the SQLite index.
+func GetCacheIndexPath(archivePath string) (string, error) {
+	absPath, err := filepath.Abs(archivePath)
+	if err != nil {
+		return "", err
+	}
+
+	var cacheDir string
+	if runtime.GOOS == "windows" {
+		cacheDir = os.Getenv("LOCALAPPDATA")
+		if cacheDir == "" {
+			cacheDir = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		cacheDir = filepath.Join(cacheDir, "ratarmount", "Cache")
+	} else {
+		cacheDir = os.Getenv("XDG_CACHE_HOME")
+		if cacheDir == "" {
+			home := os.Getenv("HOME")
+			if home == "" {
+				return "", fmt.Errorf("tar: cannot determine user home directory")
+			}
+			cacheDir = filepath.Join(home, ".cache")
+		}
+		cacheDir = filepath.Join(cacheDir, "ratarmount")
+	}
+
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		return "", err
+	}
+
+	cleanName := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ':' {
+			return '_'
+		}
+		return r
+	}, absPath)
+
+	cleanName = strings.TrimPrefix(cleanName, "_")
+	return filepath.Join(cacheDir, cleanName+".sqlite"), nil
+}
+
 // GetStandardIndexPath attempts to place the SQLite index next to the archive (sidecar).
 // If the directory is read-only, it falls back to the user's cache directory.
 func GetStandardIndexPath(archivePath string) (string, error) {
@@ -175,39 +242,12 @@ func GetStandardIndexPath(archivePath string) (string, error) {
 	}
 
 	// Fallback to cache directory if archive directory is read-only
-	var cacheDir string
-	if runtime.GOOS == "windows" {
-		cacheDir = os.Getenv("LOCALAPPDATA")
-		if cacheDir == "" {
-			cacheDir = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
-		}
-		cacheDir = filepath.Join(cacheDir, "ratarmount", "Cache")
-	} else {
-		cacheDir = os.Getenv("XDG_CACHE_HOME")
-		if cacheDir == "" {
-			home := os.Getenv("HOME")
-			if home == "" {
-				return "", fmt.Errorf("tar: cannot determine user home directory")
-			}
-			cacheDir = filepath.Join(home, ".cache")
-		}
-		cacheDir = filepath.Join(cacheDir, "ratarmount")
-	}
-
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+	cachePath, err := GetCacheIndexPath(archivePath)
+	if err != nil {
 		// If even cache dir creation fails, try sidecar anyway (it will fail later, but it's the last resort)
 		return sidecarPath, nil
 	}
-
-	cleanName := strings.Map(func(r rune) rune {
-		if r == '/' || r == '\\' || r == ':' {
-			return '_'
-		}
-		return r
-	}, absPath)
-
-	cleanName = strings.TrimPrefix(cleanName, "_")
-	return filepath.Join(cacheDir, cleanName+".sqlite"), nil
+	return cachePath, nil
 }
 
 func (t *TarFS) Close() error {
