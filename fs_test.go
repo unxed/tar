@@ -470,3 +470,54 @@ func TestGzipFastPath(t *testing.T) {
 	}
 }
 
+func TestTarFS_ResilientFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "fallback_test.tar")
+
+	// 1. Create a valid TAR archive
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := NewWriter(f)
+	tw.WriteHeader(&Header{Name: "test.txt", Size: 4, Mode: 0644})
+	tw.Write([]byte("data"))
+	tw.Close()
+	f.Close()
+
+	// 2. Pre-create the sidecar file with garbage data to simulate an SQLite initialization failure
+	sidecarPath := archivePath + ".index.sqlite"
+	err = os.WriteFile(sidecarPath, []byte("THIS_IS_NOT_A_VALID_SQLITE_DATABASE_FILE_GARBAGE"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Open via NewFS with empty indexPath to trigger automatic sidecar path detection and fallback
+	tfs, err := NewFS(archivePath, "")
+	if err != nil {
+		t.Fatalf("NewFS failed to fall back and open the archive: %v", err)
+	}
+	defer tfs.Close()
+
+	// 4. Verify tfs.IndexPath points to the cache directory (since the sidecar was corrupted)
+	expectedCachePath, err := GetCacheIndexPath(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tfs.IndexPath != expectedCachePath {
+		t.Errorf("Expected IndexPath to be %q (cache), got %q", expectedCachePath, tfs.IndexPath)
+	}
+
+	// 5. Verify the file can still be read successfully
+	data, err := fs.ReadFile(tfs, "test.txt")
+	if err != nil {
+		t.Fatalf("Failed to read file from recovered TarFS: %v", err)
+	}
+	if string(data) != "data" {
+		t.Errorf("Unexpected content: got %q, want 'data'", string(data))
+	}
+
+	// Clean up
+	os.Remove(tfs.IndexPath)
+	os.Remove(sidecarPath)
+}
