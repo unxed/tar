@@ -410,7 +410,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 				streams, _ := getAlternativeDataStreamsFunc(name)
 				for _, stream := range streams {
 					streamPath := name + stream
-					if streamFi, serr := os.Stat(streamPath); serr == nil {
+					if streamFi, serr := os.Stat(fixOSPath(streamPath)); serr == nil {
 						virtualFiles = append(virtualFiles, virtualFile{
 							path: streamPath,
 							info: streamFi,
@@ -464,7 +464,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 					size := task.fi.Size()
 					if size > 0 && size <= 16*1024*1024 {
 						task.dataPtr = getSmallBuffer(size)
-						f, err := os.Open(task.path)
+						f, err := os.Open(fixOSPath(task.path))
 						if err == nil {
 							_, task.err = io.ReadFull(f, task.dataPtr)
 							f.Close()
@@ -524,7 +524,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 
 			link := ""
 			if fi.Mode()&os.ModeSymlink != 0 {
-				link, _ = os.Readlink(path)
+				link, _ = os.Readlink(fixOSPath(path))
 			} else {
 				link = getHardLinkTarget(fi, a.seenHardLinks)
 				if link == "" {
@@ -613,7 +613,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 					}
 					peekBuf = task.dataPtr[:l]
 				} else {
-					f, err := os.Open(task.path)
+					f, err := os.Open(fixOSPath(task.path))
 					if err == nil {
 						peekBuf = make([]byte, peekSize)
 						n, _ := io.ReadFull(f, peekBuf)
@@ -644,7 +644,7 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 				_, err = a.wc.Write(task.dataPtr)
 				putSmallBuffer(task.dataPtr)
 			} else if task.fi.Size() > 0 {
-				f, ferr := os.Open(task.path)
+				f, ferr := os.Open(fixOSPath(task.path))
 				if ferr != nil {
 					a.m.Unlock()
 					return ferr

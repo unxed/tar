@@ -26,12 +26,12 @@ func lchown(name string, uid, gid int) error {
 }
 func createWindowsSymlink(target, link string, isDir bool) error {
 	targetPath, _ := syscall.UTF16PtrFromString(target)
-	linkPath, _ := syscall.UTF16PtrFromString(link)
+	linkPath, _ := syscall.UTF16PtrFromString(fixOSPath(link))
 
 	if isDir {
 		err := windows.CreateSymbolicLink(linkPath, targetPath, windows.SYMBOLIC_LINK_FLAG_DIRECTORY)
 		if err != nil {
-			return os.MkdirAll(link, 0755)
+			return os.MkdirAll(fixOSPath(link), 0755)
 		}
 		return nil
 	}
@@ -47,12 +47,12 @@ func createWindowsSymlink(target, link string, isDir bool) error {
 }
 
 func copyFileContents(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := os.Open(fixOSPath(src))
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	out, err := os.Create(fixOSPath(dst))
 	if err != nil {
 		return err
 	}
@@ -62,6 +62,7 @@ func copyFileContents(src, dst string) error {
 }
 
 func lchtimes(name string, atime, mtime time.Time) error {
+	name = fixOSPath(name)
 	// Windows doesn't easily support Lutimes without deep API calls.
 	// Fallback to normal Chtimes (which follows symlinks).
 	fi, err := os.Lstat(name)
@@ -69,7 +70,6 @@ func lchtimes(name string, atime, mtime time.Time) error {
 		return nil // Skip symlink times on Windows
 	}
 	return os.Chtimes(name, atime, mtime)
-}
 
 func mknod(name string, mode uint32, dev int) error {
 	// Not supported
@@ -105,7 +105,7 @@ type win32FindStreamData struct {
 }
 
 func getFileSecurity(path string) ([]byte, error) {
-	pathPtr, err := syscall.UTF16PtrFromString(path)
+	pathPtr, err := syscall.UTF16PtrFromString(fixOSPath(path))
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func applyNtfsAcl(path string, acl []byte) error {
 	if len(acl) == 0 {
 		return nil
 	}
-	pathPtr, err := syscall.UTF16PtrFromString(path)
+	pathPtr, err := syscall.UTF16PtrFromString(fixOSPath(path))
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func applyNtfsAcl(path string, acl []byte) error {
 }
 
 func getAlternativeDataStreams(path string) ([]string, error) {
-	pathPtr, err := syscall.UTF16PtrFromString(path)
+	pathPtr, err := syscall.UTF16PtrFromString(fixOSPath(path))
 	if err != nil {
 		return nil, err
 	}

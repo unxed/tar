@@ -452,15 +452,15 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		// Overwrite control policies (GNU/BSD tar compatibility)
 		if hdr.Typeflag != TypeDir && hdr.Typeflag != TypeXGlobalHeader && hdr.Typeflag != TypeVol {
 			if e.options.unlinkFirst {
-				os.Remove(path) // Unconditionally remove before extraction
+				os.Remove(fixOSPath(path)) // Unconditionally remove before extraction
 			}
 			if e.options.keepOldFiles {
-				if _, err := os.Stat(path); err == nil {
+				if _, err := os.Stat(fixOSPath(path)); err == nil {
 					continue // Skip extracting, file already exists
 				}
 			}
 			if e.options.keepNewerFiles {
-				if fi, err := os.Stat(path); err == nil {
+				if fi, err := os.Stat(fixOSPath(path)); err == nil {
 					if fi.ModTime().After(hdr.ModTime) {
 						continue // Skip extracting, disk file is newer
 					}
@@ -499,11 +499,11 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					i = end + 1
 				}
 
-				entries, err := os.ReadDir(path)
+				entries, err := os.ReadDir(fixOSPath(path))
 				if err == nil {
 					for _, entry := range entries {
 						if !validNames[entry.Name()] {
-							os.RemoveAll(filepath.Join(path, entry.Name()))
+							os.RemoveAll(fixOSPath(filepath.Join(path, entry.Name())))
 						}
 					}
 				}
@@ -525,7 +525,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			startWorkers()
 
 			e.synthesizeDir(filepath.Dir(path))
-			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, os.FileMode(hdr.Mode))
+			f, err := os.OpenFile(fixOSPath(path), os.O_WRONLY|os.O_APPEND|os.O_CREATE, os.FileMode(hdr.Mode))
 			if err != nil {
 				return err
 			}
@@ -619,7 +619,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						writePath = p + ".tmp"
 					}
 
-					f, err := os.OpenFile(writePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
+					f, err := os.OpenFile(fixOSPath(writePath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
 					if err != nil {
 						return err
 					}
@@ -628,7 +628,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					defer func() {
 						f.Close()
 						if err != nil && cleanup && !e.options.keepBroken {
-							os.Remove(writePath)
+							os.Remove(fixOSPath(writePath))
 						}
 					}()
 
@@ -667,8 +667,8 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					}
 
 					if e.options.safeWrites {
-						if rerr := os.Rename(writePath, p); rerr != nil {
-							os.Remove(writePath)
+						if rerr := os.Rename(fixOSPath(writePath), fixOSPath(p)); rerr != nil {
+							os.Remove(fixOSPath(writePath))
 							return rerr
 						}
 					}
@@ -690,7 +690,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					writePath = path + ".tmp"
 				}
 
-				f, err := os.OpenFile(writePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
+				f, err := os.OpenFile(fixOSPath(writePath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
 				if err != nil {
 					return err
 				}
@@ -699,7 +699,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				defer func() {
 					f.Close()
 					if err != nil && cleanup && !e.options.keepBroken {
-						os.Remove(writePath)
+						os.Remove(fixOSPath(writePath))
 					}
 				}()
 
@@ -752,8 +752,8 @@ func (e *Extractor) Extract(ctx context.Context) error {
 					}
 
 					if e.options.safeWrites {
-						if rerr := os.Rename(writePath, path); rerr != nil {
-							os.Remove(writePath)
+						if rerr := os.Rename(fixOSPath(writePath), fixOSPath(path)); rerr != nil {
+							os.Remove(fixOSPath(writePath))
 							return rerr
 						}
 					}
@@ -793,7 +793,7 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		os.Remove(path) // Ignore error
+		os.Remove(fixOSPath(path)) // Ignore error
 		hdrLinkname := hdr.Linkname
 		if strings.HasPrefix(hdrLinkname, MappedStringMarkStr) {
 			hdrLinkname = string(encodeMappedString(hdrLinkname))
@@ -801,20 +801,20 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		if hdr.Typeflag == TypeSymlink {
 			if runtime.GOOS == "windows" {
 				isDir := false
-				if fi, err := os.Stat(filepath.Join(filepath.Dir(path), hdrLinkname)); err == nil {
-					isDir = fi.IsDir()
-				}
+			if fi, err := os.Stat(fixOSPath(filepath.Join(filepath.Dir(path), hdrLinkname))); err == nil {
+				isDir = fi.IsDir()
+			}
 				if err := createWindowsSymlink(hdrLinkname, path, isDir); err != nil {
 					return err
 				}
 			} else {
-				if err := os.Symlink(hdrLinkname, path); err != nil {
-					return err
-				}
+			if err := os.Symlink(hdrLinkname, fixOSPath(path)); err != nil {
+				return err
+			}
 			}
 		} else {
 			targetPath := filepath.Join(e.chroot, hdrLinkname)
-			if err := os.Link(targetPath, path); err != nil {
+			if err := os.Link(fixOSPath(targetPath), fixOSPath(path)); err != nil {
 				return err
 			}
 		}
@@ -825,9 +825,9 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		if !e.options.noTimes {
 			lchtimes(path, hdr.AccessTime, hdr.ModTime)
 		}
-		os.Chmod(path, os.FileMode(hdr.Mode))
+		os.Chmod(fixOSPath(path), os.FileMode(hdr.Mode))
 		uid, gid := resolveIds(hdr, e.options.numericOwner)
-		err = lchown(path, uid, gid)
+		err = lchown(fixOSPath(path), uid, gid)
 		if err != nil && e.options.chownErrorHandler != nil {
 			err = e.options.chownErrorHandler(path, err)
 		}
@@ -886,7 +886,7 @@ func (e *Extractor) linksToDirs(targetPath string) error {
 	current := e.chroot
 	for i := 0; i < len(parts)-1; i++ {
 		current = filepath.Join(current, parts[i])
-		fi, err := os.Lstat(current)
+		fi, err := os.Lstat(fixOSPath(current))
 		if err != nil {
 			if os.IsNotExist(err) {
 				break
@@ -894,7 +894,7 @@ func (e *Extractor) linksToDirs(targetPath string) error {
 			return err
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
-			if err := os.Remove(current); err != nil {
+			if err := os.Remove(fixOSPath(current)); err != nil {
 				return err
 			}
 		}
@@ -907,7 +907,7 @@ func (e *Extractor) synthesizeDir(targetDir string) error {
 	if _, ok := e.dirCache.Load(targetDir); ok {
 		return nil
 	}
-	err := os.MkdirAll(targetDir, 0755)
+	err := os.MkdirAll(fixOSPath(targetDir), 0755)
 	if err == nil {
 		e.dirCache.Store(targetDir, struct{}{})
 		return nil
@@ -926,18 +926,18 @@ func (e *Extractor) synthesizeDir(targetDir string) error {
 
 	for i := 0; i < len(parts); i++ {
 		current = filepath.Join(current, parts[i])
-		fi, errStat := os.Lstat(current)
+		fi, errStat := os.Lstat(fixOSPath(current))
 		if errStat != nil {
 			if os.IsNotExist(errStat) {
-				if errMk := os.Mkdir(current, 0755); errMk != nil && !os.IsExist(errMk) {
+				if errMk := os.Mkdir(fixOSPath(current), 0755); errMk != nil && !os.IsExist(errMk) {
 					return errMk
 				}
 			} else {
 				return errStat
 			}
 		} else if !fi.IsDir() {
-			if errRm := os.Remove(current); errRm == nil {
-				if errMk := os.Mkdir(current, 0755); errMk != nil {
+			if errRm := os.Remove(fixOSPath(current)); errRm == nil {
+				if errMk := os.Mkdir(fixOSPath(current), 0755); errMk != nil {
 					return errMk
 				}
 			} else {
