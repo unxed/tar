@@ -70,6 +70,7 @@ func lchtimes(name string, atime, mtime time.Time) error {
 		return nil // Skip symlink times on Windows
 	}
 	return os.Chtimes(name, atime, mtime)
+}
 
 func mknod(name string, mode uint32, dev int) error {
 	// Not supported
