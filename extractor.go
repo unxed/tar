@@ -1,7 +1,7 @@
 package tar
 
 import (
-    "unsafe"
+    "bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -160,27 +160,13 @@ func putSmallBuffer(b []byte) {
 	memPools[idx].Put(&full)
 }
 
+var globalZeros = make([]byte, 1024*1024)
+
 func isAllZeros(p []byte) bool {
 	if len(p) == 0 {
 		return true
 	}
-
-	// Быстрый путь для 64-битных платформ: проверяем по 8 байт за раз
-	// Это работает быстрее, чем bytes.Equal на больших пустых блоках (типа 1MB sparse chunks)
-	for len(p) >= 8 {
-		if *(*uint64)(unsafe.Pointer(&p[0])) != 0 {
-			return false
-		}
-		p = p[8:]
-	}
-
-	// Хвост проверяем побайтово
-	for i := range p {
-		if p[i] != 0 {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(p, globalZeros[:len(p)])
 }
 
 func copySparseBytes(dst *os.File, data []byte) error {
@@ -593,9 +579,12 @@ func (e *Extractor) Extract(ctx context.Context) error {
 			if hdr.Size <= memBufferLimit {
 				// Small files: read into memory and delegate I/O to worker pool
 				var dataPtr []byte
+				var origDataPtr []byte
 				if hdr.Size > 0 {
 					dataPtr = getSmallBuffer(hdr.Size)
+					origDataPtr = dataPtr
 					if _, err = io.ReadFull(e.rc, dataPtr); err != nil {
+						putSmallBuffer(origDataPtr)
 						return err
 					}
 				}
@@ -609,8 +598,8 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				select {
 				case taskCh <- func() error {
 					defer func() {
-						if len(dataPtr) > 0 {
-							putSmallBuffer(dataPtr)
+						if len(origDataPtr) > 0 {
+							putSmallBuffer(origDataPtr)
 						}
 					}()
 					writePath := p

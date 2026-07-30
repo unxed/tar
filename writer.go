@@ -209,7 +209,9 @@ func (wc *WriteCloser) Write(p []byte) (int, error) {
 	const flushThreshold = 4 * 1024 * 1024
 	if wc.uncompTracker.pos-wc.lastFlushPos >= flushThreshold {
 		if wc.method == ZSTD || wc.method == GZIP {
-			wc.createSeekPoint()
+			if ferr := wc.createSeekPoint(); ferr != nil {
+				return n, ferr
+			}
 		}
 	}
 
@@ -223,23 +225,26 @@ func (wc *WriteCloser) SetCompressionLevel(level int) error {
 	if wc.currentLevel == level {
 		return nil
 	}
-	wc.Writer.Flush() // Flush pending tar padding to the current compressor
+	if err := wc.Writer.Flush(); err != nil {
+		return err
+	}
 	wc.currentLevel = level
-	wc.createSeekPointWithLevel(level)
-	return nil
+	return wc.createSeekPointWithLevel(level)
 }
 
-func (wc *WriteCloser) createSeekPoint() {
-	wc.createSeekPointWithLevel(wc.currentLevel)
+func (wc *WriteCloser) createSeekPoint() error {
+	return wc.createSeekPointWithLevel(wc.currentLevel)
 }
 
-func (wc *WriteCloser) createSeekPointWithLevel(level int) {
+func (wc *WriteCloser) createSeekPointWithLevel(level int) error {
 	if wc.method == ZSTD || wc.method == GZIP || wc.method == XZ {
 		// We close the current member/frame and start a new one.
 		// This ensures the next byte in the output stream is a valid frame header
 		// (GZIP magic or ZSTD magic), allowing O(1) random access seeking
 		// without needing to recover the compression state (sliding window/dictionary).
-		wc.comp.Close()
+		if err := wc.comp.Close(); err != nil {
+			return err
+		}
 
 		if wc.method == ZSTD {
 			wc.zstdBlocks = append(wc.zstdBlocks, BlockOffset{
@@ -266,14 +271,17 @@ func (wc *WriteCloser) createSeekPointWithLevel(level int) {
 			newComp, err = ci.(Compressor)(wc.compTracker)
 		}
 
-		if err == nil {
-			wc.comp = newComp
-			// Update the target of our tracking wrapper so the tar.Writer
-			// now pumps data into the new compression member.
-			wc.uncompTracker.w = newComp
-			wc.lastFlushPos = wc.uncompTracker.pos
+		if err != nil {
+			return err
 		}
+
+		wc.comp = newComp
+		// Update the target of our tracking wrapper so the tar.Writer
+		// now pumps data into the new compression member.
+		wc.uncompTracker.w = newComp
+		wc.lastFlushPos = wc.uncompTracker.pos
 	}
+	return nil
 }
 
 func (wc *WriteCloser) Close() error {

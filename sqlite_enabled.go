@@ -156,11 +156,11 @@ func (idx *Index) Lookup(p string) (*FileNode, error) {
 	n.Xattrs = make(map[string][]byte)
 	xRows, err := idx.db.Query(`SELECT key, value FROM xattrs WHERE offsetheader = ?`, n.OffsetHeader)
 	if err == nil {
+		defer xRows.Close()
 		for xRows.Next() {
 			var k string; var v []byte
 			if xRows.Scan(&k, &v) == nil { n.Xattrs[k] = v }
 		}
-		xRows.Close()
 	}
 	aRow := idx.db.QueryRow(`SELECT acl FROM acls WHERE offsetheader = ?`, n.OffsetHeader)
 	aRow.Scan(&n.Acl)
@@ -188,11 +188,11 @@ func (idx *Index) List(p string) ([]FileNode, error) {
 		res[i].Xattrs = make(map[string][]byte)
 		xRows, _ := idx.db.Query(`SELECT key, value FROM xattrs WHERE offsetheader = ?`, res[i].OffsetHeader)
 		if xRows != nil {
+			defer xRows.Close()
 			for xRows.Next() {
 				var k string; var v []byte
 				if xRows.Scan(&k, &v) == nil { res[i].Xattrs[k] = v }
 			}
-			xRows.Close()
 		}
 		aRow := idx.db.QueryRow(`SELECT acl FROM acls WHERE offsetheader = ?`, res[i].OffsetHeader)
 		aRow.Scan(&res[i].Acl)

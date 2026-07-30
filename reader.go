@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"sync"
-	"unsafe"
 )
 
 type ReadCloser struct {
@@ -75,10 +74,15 @@ func openReaderWithPassword(name string, password string) (*ReadCloser, error) {
 	}, nil
 }
 
+type chunk struct {
+	data []byte
+	ptr  *buffer64K
+}
+
 type bufferedPipe struct {
-	ch      chan []byte
+	ch      chan chunk
 	errCh   chan error
-	current []byte
+	current chunk
 	r       io.ReadCloser
 	err     error
 }
@@ -90,7 +94,7 @@ var chunkPool = sync.Pool{
 }
 
 func makeBufferedPipelineReader(r io.ReadCloser) io.ReadCloser {
-	ch := make(chan []byte, 16)
+	ch := make(chan chunk, 16)
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -99,7 +103,7 @@ func makeBufferedPipelineReader(r io.ReadCloser) io.ReadCloser {
 			bufPtr := chunkPool.Get().(*buffer64K)
 			n, err := io.ReadFull(r, bufPtr[:])
 			if n > 0 {
-				ch <- bufPtr[:n]
+				ch <- chunk{data: bufPtr[:n], ptr: bufPtr}
 			} else {
 				chunkPool.Put(bufPtr)
 			}
@@ -127,7 +131,7 @@ func (bp *bufferedPipe) Read(b []byte) (int, error) {
 		return 0, nil
 	}
 
-	if len(bp.current) == 0 {
+	if len(bp.current.data) == 0 {
 		if bp.err != nil {
 			return 0, bp.err
 		}
@@ -144,17 +148,11 @@ func (bp *bufferedPipe) Read(b []byte) (int, error) {
 		}
 	}
 
-	n := copy(b, bp.current)
-	leftover := bp.current[n:]
-	if len(leftover) == 0 {
-		if cap(bp.current) == 65536 {
-			fullSlice := bp.current[:65536]
-			ptr := (*buffer64K)(unsafe.Pointer(&fullSlice[0]))
-			chunkPool.Put(ptr)
-		}
-		bp.current = nil
-	} else {
-		bp.current = leftover
+	n := copy(b, bp.current.data)
+	bp.current.data = bp.current.data[n:]
+	if len(bp.current.data) == 0 {
+		chunkPool.Put(bp.current.ptr)
+		bp.current = chunk{}
 	}
 
 	return n, nil
@@ -162,12 +160,11 @@ func (bp *bufferedPipe) Read(b []byte) (int, error) {
 
 func (bp *bufferedPipe) Close() error {
 	bp.r.Close()
-	for b := range bp.ch {
-		if cap(b) == 65536 {
-			fullSlice := b[:65536]
-			ptr := (*buffer64K)(unsafe.Pointer(&fullSlice[0]))
-			chunkPool.Put(ptr)
-		}
+	for c := range bp.ch {
+		chunkPool.Put(c.ptr)
+	}
+	if bp.current.ptr != nil {
+		chunkPool.Put(bp.current.ptr)
 	}
 	return nil
 }
