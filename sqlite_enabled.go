@@ -8,7 +8,6 @@ import (
 	"bytes"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
-	_ "github.com/ncruces/go-sqlite3/embed"
 )
 
 type Index struct {
