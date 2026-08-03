@@ -76,8 +76,8 @@ func sysHeader(fi os.FileInfo, hdr *tar.Header) {
 		hdr.Gname = gname
 	}
 
-	hdr.AccessTime = time.Unix(sys.Atimespec.Sec, sys.Atimespec.Nsec)
-	hdr.ChangeTime = time.Unix(sys.Ctimespec.Sec, sys.Ctimespec.Nsec)
+	hdr.AccessTime = time.Unix(int64(sys.Atimespec.Sec), int64(sys.Atimespec.Nsec))
+	hdr.ChangeTime = time.Unix(int64(sys.Ctimespec.Sec), int64(sys.Ctimespec.Nsec))
 
 	switch fi.Mode() & os.ModeType {
 	case os.ModeDevice | os.ModeCharDevice:
