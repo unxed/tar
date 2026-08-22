@@ -83,12 +83,12 @@ func sysHeader(fi os.FileInfo, hdr *tar.Header) {
 	switch fi.Mode() & os.ModeType {
 	case os.ModeDevice | os.ModeCharDevice:
 		hdr.Typeflag = tar.TypeChar
-		hdr.Devmajor = int64(unix.Major(sys.Rdev))
-		hdr.Devminor = int64(unix.Minor(sys.Rdev))
+		hdr.Devmajor = int64(unix.Major(uint64(sys.Rdev)))
+		hdr.Devminor = int64(unix.Minor(uint64(sys.Rdev)))
 	case os.ModeDevice:
 		hdr.Typeflag = tar.TypeBlock
-		hdr.Devmajor = int64(unix.Major(sys.Rdev))
-		hdr.Devminor = int64(unix.Minor(sys.Rdev))
+		hdr.Devmajor = int64(unix.Major(uint64(sys.Rdev)))
+		hdr.Devminor = int64(unix.Minor(uint64(sys.Rdev)))
 	case os.ModeNamedPipe:
 		hdr.Typeflag = tar.TypeFifo
 	}
