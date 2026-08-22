@@ -1,8 +1,8 @@
 package tar
 
 import (
-    "context"
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"os/exec"

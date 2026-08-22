@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
-    "io"
-    "fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -55,6 +55,7 @@ func WithFSPassword(p string) FSOption {
 		o.password = p
 	}
 }
+
 // NewFS opens a tar archive as a standard Go fs.FS (File System).
 // This enables integration with http.FileServer, fs.WalkDir, etc.
 // If the SQLite index does not exist, it will be generated automatically.
@@ -161,9 +162,9 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 	}
 
 	return &TarFS{
-		ArchivePath: archivePath,
-		IndexPath:   indexPath,
-		Index:       idx,
+		ArchivePath:      archivePath,
+		IndexPath:        indexPath,
+		Index:            idx,
 		method:           method,
 		xzBlocks:         xzBlocks,
 		closer:           mvr,
@@ -171,6 +172,7 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		password:         options.password,
 	}, nil
 }
+
 // GetCacheIndexPath returns the path to the cache directory for the SQLite index.
 func GetCacheIndexPath(archivePath string) (string, error) {
 	absPath, err := filepath.Abs(archivePath)
@@ -266,6 +268,7 @@ func (t *TarFS) Close() error {
 	}
 	return err2
 }
+
 // Deprecated: Retained for testing compatibility (e.g. edge_coverage_test)
 func readVLI(r io.Reader) (uint64, error) {
 	var v uint64
@@ -386,7 +389,7 @@ func (t *TarFS) Open(name string) (fs.File, error) {
 	// For uncompressed TARs, random access is instantaneous O(1) via SectionReader.
 	if t.method == Store {
 		if node.IsSparse {
-			sr := io.NewSectionReader(ra, targetOffset, size - targetOffset)
+			sr := io.NewSectionReader(ra, targetOffset, size-targetOffset)
 			tr := NewReader(sr)
 			if _, err := tr.Next(); err != nil {
 				mvr.Close()
@@ -546,6 +549,7 @@ func (mc multiCloser) Close() error {
 	}
 	return firstErr
 }
+
 type xzMultiBlockReader struct {
 	ra           io.ReaderAt
 	blocks       []xz.Block

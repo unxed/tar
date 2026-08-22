@@ -9,11 +9,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"runtime"
 )
 
 type ArchiverOption func(*archiverOptions) error
@@ -78,6 +78,7 @@ func WithArchiverEmbeddedIndex(b bool) ArchiverOption {
 		return nil
 	}
 }
+
 // WithArchiverRecovery устанавливает процент избыточности PAR2 для защиты архива
 func WithArchiverRecovery(pct int) ArchiverOption {
 	return func(o *archiverOptions) error {
@@ -686,9 +687,13 @@ func Compress(inputFilePath, outputFilePath string) error {
 
 	files := make(map[string]os.FileInfo)
 	err = filepath.WalkDir(inputFilePath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		info, err := d.Info()
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		files[path] = info
 		return nil
 	})

@@ -1,4 +1,5 @@
 //go:build !freebsd && !openbsd && !netbsd && !dragonfly && !solaris && !illumos
+
 package tar
 
 import (

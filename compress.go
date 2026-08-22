@@ -443,10 +443,14 @@ func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOff
 
 // -- BZIP2 --
 type bzip2Format struct{}
-func (bzip2Format) Decompress(r io.Reader) (io.ReadCloser, error) { return io.NopCloser(bzip2.NewReader(r)), nil }
+
+func (bzip2Format) Decompress(r io.Reader) (io.ReadCloser, error) {
+	return io.NopCloser(bzip2.NewReader(r)), nil
+}
 
 // -- XZ --
 type xzFormat struct{}
+
 func (xzFormat) Decompress(r io.Reader) (io.ReadCloser, error) {
 	xr, err := xz.NewReader(r)
 	if err != nil {

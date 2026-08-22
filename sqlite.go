@@ -2,8 +2,8 @@ package tar
 
 import (
 	"path"
-	"time"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"github.com/klauspost/compress/zstd"
 	"io"
 	"io/fs"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"runtime"
 	"testing"
 	"time"
-	"github.com/klauspost/compress/zstd"
 )
 
 // TestMultiCompressions verifies round-trip compression and extraction for all supported methods.
@@ -228,7 +228,6 @@ func TestArchiver_OutsideChrootNormalization(t *testing.T) {
 	}
 	a.Close()
 }
-
 
 func TestExtractor_DirectoryPermissionOrdering(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -472,13 +471,13 @@ func TestExtractor_LargeFileHybrid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-			// Write dummy data in chunks efficiently
-			chunk := bytes.Repeat([]byte("A"), 1024*1024)
-			for i := 0; i < 17; i++ {
-				if _, err := tw.Write(chunk); err != nil {
-					t.Fatal(err)
-				}
-			}
+	// Write dummy data in chunks efficiently
+	chunk := bytes.Repeat([]byte("A"), 1024*1024)
+	for i := 0; i < 17; i++ {
+		if _, err := tw.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
 	tw.Close()
 	f.Close()
 
@@ -834,16 +833,18 @@ func TestExportDZIDX_EdgeCases(t *testing.T) {
 		t.Errorf("Expected DZIDX header to be at least 32 bytes, got %d", len(res2))
 	}
 }
+
 type tarMockFileInfo struct {
 	name string
 	mode os.FileMode
 }
-func (m tarMockFileInfo) Name() string { return m.name }
-func (m tarMockFileInfo) Size() int64 { return 0 }
-func (m tarMockFileInfo) Mode() os.FileMode { return m.mode }
+
+func (m tarMockFileInfo) Name() string       { return m.name }
+func (m tarMockFileInfo) Size() int64        { return 0 }
+func (m tarMockFileInfo) Mode() os.FileMode  { return m.mode }
 func (m tarMockFileInfo) ModTime() time.Time { return time.Now() }
-func (m tarMockFileInfo) IsDir() bool { return m.mode.IsDir() }
-func (m tarMockFileInfo) Sys() interface{} { return nil }
+func (m tarMockFileInfo) IsDir() bool        { return m.mode.IsDir() }
+func (m tarMockFileInfo) Sys() interface{}   { return nil }
 
 func TestArchiver_DifferentDrivesWindows_Tar(t *testing.T) {
 	if runtime.GOOS != "windows" {

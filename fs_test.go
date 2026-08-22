@@ -1,15 +1,16 @@
 //go:build !freebsd && !openbsd && !netbsd && !dragonfly && !solaris && !illumos
+
 package tar
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"testing"
-	"encoding/binary"
 	"runtime"
 	"strings"
+	"testing"
 
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
@@ -365,6 +366,7 @@ func TestCacheCompatibility(t *testing.T) {
 		}
 	}
 }
+
 // TestGzipFastPath verifies that TarFS successfully performs O(1) random-access
 // seeking in GZIP archives by index-checkpointing on pure Go without CGO.
 func TestGzipFastPath(t *testing.T) {

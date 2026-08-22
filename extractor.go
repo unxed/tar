@@ -1,7 +1,7 @@
 package tar
 
 import (
-    "bytes"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -122,6 +122,7 @@ func nextPowerOf2(n int64) int64 {
 }
 
 type buffer64K [65536]byte
+
 var memPools [25]sync.Pool
 
 func getSmallBuffer(size int64) []byte {
@@ -258,6 +259,7 @@ func WithExtractorMaxRatio(n int64) ExtractorOption {
 		return nil
 	}
 }
+
 // WithExtractorKeepOldFiles prevents overwriting existing files (-k or --keep-old-files)
 func WithExtractorKeepOldFiles(keep bool) ExtractorOption {
 	return func(o *extractorOptions) error {
@@ -273,6 +275,7 @@ func WithExtractorKeepNewerFiles(keep bool) ExtractorOption {
 		return nil
 	}
 }
+
 // WithExtractorNoTimes prevents restoring original modification times (-m / --touch)
 func WithExtractorNoTimes(noTimes bool) ExtractorOption {
 	return func(o *extractorOptions) error {
@@ -334,7 +337,7 @@ func NewExtractor(filename, chroot string, opts ...ExtractorOption) (*Extractor,
 		chroot: chroot,
 		options: extractorOptions{
 			concurrency:           runtime.GOMAXPROCS(0),
-			maxFileSize:           0,   // unlimited
+			maxFileSize:           0,     // unlimited
 			maxDecompressionRatio: 10000, // 10000:1 default
 			xattrs:                true,
 			chownErrorHandler: func(name string, err error) error {
@@ -405,207 +408,278 @@ func (e *Extractor) Extract(ctx context.Context) error {
 				return err
 			}
 
-		name := hdr.Name
-		if strings.HasPrefix(name, MappedStringMarkStr) {
-			name = string(encodeMappedString(name))
-		}
-		if e.options.stripComponents > 0 {
-			stripped, ok := stripComponents(name, e.options.stripComponents)
-			if !ok {
-				continue // Skip file with fewer or equal components
+			name := hdr.Name
+			if strings.HasPrefix(name, MappedStringMarkStr) {
+				name = string(encodeMappedString(name))
 			}
-			name = stripped
-		}
-
-		cleanName := filepath.ToSlash(filepath.Clean(name))
-		path := filepath.Join(e.chroot, cleanName)
-
-		prefix := e.chroot
-		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-			prefix += string(filepath.Separator)
-		}
-		if !strings.HasPrefix(path, prefix) && path != e.chroot {
-			return fmt.Errorf("%s cannot be extracted outside of chroot (%s)", path, e.chroot)
-		}
-
-		if err := e.linksToDirs(path); err != nil {
-			return err
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		// Overwrite control policies (GNU/BSD tar compatibility)
-		if hdr.Typeflag != TypeDir && hdr.Typeflag != TypeXGlobalHeader && hdr.Typeflag != TypeVol {
-			if e.options.unlinkFirst {
-				os.Remove(fixOSPath(path)) // Unconditionally remove before extraction
+			if e.options.stripComponents > 0 {
+				stripped, ok := stripComponents(name, e.options.stripComponents)
+				if !ok {
+					continue // Skip file with fewer or equal components
+				}
+				name = stripped
 			}
-			if e.options.keepOldFiles {
-				if _, err := os.Stat(fixOSPath(path)); err == nil {
-					continue // Skip extracting, file already exists
-				}
+
+			cleanName := filepath.ToSlash(filepath.Clean(name))
+			path := filepath.Join(e.chroot, cleanName)
+
+			prefix := e.chroot
+			if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+				prefix += string(filepath.Separator)
 			}
-			if e.options.keepNewerFiles {
-				if fi, err := os.Stat(fixOSPath(path)); err == nil {
-					if fi.ModTime().After(hdr.ModTime) {
-						continue // Skip extracting, disk file is newer
-					}
-				}
+			if !strings.HasPrefix(path, prefix) && path != e.chroot {
+				return fmt.Errorf("%s cannot be extracted outside of chroot (%s)", path, e.chroot)
 			}
-		}
 
-		switch hdr.Typeflag {
-		case TypeXGlobalHeader, TypeVol:
-			// Ignore global extended headers and volume labels
-			continue
-
-		case TypeGNUDumpDir:
-			e.synthesizeDir(path)
-			dirs[path] = hdr
-
-			if e.options.incremental && hdr.Size > 0 {
-				data, err := io.ReadAll(e.rc)
-				if err != nil {
-					return err
-				}
-				// GNU dumpdir list is [tag byte][filename]\0, terminated by an extra \0
-				validNames := make(map[string]bool)
-				for i := 0; i < len(data); {
-					if data[i] == 0 {
-						break
-					}
-					start := i + 1 // skip the tag byte (Y/N/D)
-					end := start
-					for end < len(data) && data[end] != 0 {
-						end++
-					}
-					if end > start {
-						validNames[string(data[start:end])] = true
-					}
-					i = end + 1
-				}
-
-				entries, err := os.ReadDir(fixOSPath(path))
-				if err == nil {
-					for _, entry := range entries {
-						if !validNames[entry.Name()] {
-							os.RemoveAll(fixOSPath(filepath.Join(path, entry.Name())))
-						}
-					}
-				}
-			} else if hdr.Size > 0 {
-				buf := getSparseBuf()
-				io.CopyBuffer(io.Discard, e.rc, buf)
-				putSparseBuf(buf)
-			}
-			continue
-
-		case TypeGNUMultiVol:
-			// Close the channel to let the current workers finish their tasks
-			close(taskCh)
-			if err := wg.Wait(); err != nil {
+			if err := e.linksToDirs(path); err != nil {
 				return err
 			}
-			// Reset wg with parentCtx and restart the workers
-			wg, ctx = errgroup.WithContext(parentCtx)
-			startWorkers()
 
-			e.synthesizeDir(filepath.Dir(path))
-			f, err := os.OpenFile(fixOSPath(path), os.O_WRONLY|os.O_APPEND|os.O_CREATE, os.FileMode(hdr.Mode))
-			if err != nil {
-				return err
-			}
-			if hdr.Size > 0 {
-				buf := getSparseBuf()
-				_, err = io.CopyBuffer(f, e.rc, buf)
-				putSparseBuf(buf)
-			}
-			f.Close()
-			if err != nil {
-				return err
-			}
-			continue
-
-		case TypeDir:
-			e.synthesizeDir(path)
-			dirs[path] = hdr
-			atomic.AddInt64(&e.entries, 1)
-
-		case TypeSymlink, TypeLink:
-			// Store links and resolve them strictly after extracting regular files to avoid race conditions.
-			links = append(links, hdr)
-			continue
-
-		case TypeChar, TypeBlock, TypeFifo:
-			e.synthesizeDir(filepath.Dir(path))
-			h, p := *hdr, path
-			select {
-			case taskCh <- func() error {
-				err := extractSpecialFile(p, &h)
-				if err != nil {
-					return err
-				}
-
-				if e.options.xattrs {
-					applyXattrs(p, &h)
-				}
-
-				uid, gid := resolveIds(&h, e.options.numericOwner)
-				err = lchown(p, uid, gid)
-				if err != nil && e.options.chownErrorHandler != nil {
-					err = e.options.chownErrorHandler(p, err)
-				}
-				if err != nil && e.options.tolerant {
-					fmt.Printf("tar: skipping corrupted special file %q: %v\n", h.Name, err)
-					return nil
-				}
-				atomic.AddInt64(&e.entries, 1)
-				return err
-			}:
-			case <-ctx.Done():
+			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-
-		case TypeReg, TypeRegA:
-			e.synthesizeDir(filepath.Dir(path))
-
-			// Protection against bombs
-			if e.options.maxFileSize > 0 && hdr.Size > e.options.maxFileSize {
-				return fmt.Errorf("tar: file %q size %d exceeds limit %d", hdr.Name, hdr.Size, e.options.maxFileSize)
-			}
-
-			const memBufferLimit = 16 * 1024 * 1024 // 16MB threshold
-
-			if hdr.Size <= memBufferLimit {
-				// Small files: read into memory and delegate I/O to worker pool
-				var dataPtr []byte
-				var origDataPtr []byte
-				if hdr.Size > 0 {
-					dataPtr = getSmallBuffer(hdr.Size)
-					origDataPtr = dataPtr
-					if _, err = io.ReadFull(e.rc, dataPtr); err != nil {
-						putSmallBuffer(origDataPtr)
-						return err
+			// Overwrite control policies (GNU/BSD tar compatibility)
+			if hdr.Typeflag != TypeDir && hdr.Typeflag != TypeXGlobalHeader && hdr.Typeflag != TypeVol {
+				if e.options.unlinkFirst {
+					os.Remove(fixOSPath(path)) // Unconditionally remove before extraction
+				}
+				if e.options.keepOldFiles {
+					if _, err := os.Stat(fixOSPath(path)); err == nil {
+						continue // Skip extracting, file already exists
 					}
 				}
-
-				if strings.HasSuffix(hdr.Name, ":Zone.Identifier") && len(dataPtr) > 0 {
-					dataPtr = sanitizeZoneIdentifier(dataPtr)
-					hdr.Size = int64(len(dataPtr))
+				if e.options.keepNewerFiles {
+					if fi, err := os.Stat(fixOSPath(path)); err == nil {
+						if fi.ModTime().After(hdr.ModTime) {
+							continue // Skip extracting, disk file is newer
+						}
+					}
 				}
+			}
 
-				h, p := *hdr, path // Local copies for worker
+			switch hdr.Typeflag {
+			case TypeXGlobalHeader, TypeVol:
+				// Ignore global extended headers and volume labels
+				continue
+
+			case TypeGNUDumpDir:
+				e.synthesizeDir(path)
+				dirs[path] = hdr
+
+				if e.options.incremental && hdr.Size > 0 {
+					data, err := io.ReadAll(e.rc)
+					if err != nil {
+						return err
+					}
+					// GNU dumpdir list is [tag byte][filename]\0, terminated by an extra \0
+					validNames := make(map[string]bool)
+					for i := 0; i < len(data); {
+						if data[i] == 0 {
+							break
+						}
+						start := i + 1 // skip the tag byte (Y/N/D)
+						end := start
+						for end < len(data) && data[end] != 0 {
+							end++
+						}
+						if end > start {
+							validNames[string(data[start:end])] = true
+						}
+						i = end + 1
+					}
+
+					entries, err := os.ReadDir(fixOSPath(path))
+					if err == nil {
+						for _, entry := range entries {
+							if !validNames[entry.Name()] {
+								os.RemoveAll(fixOSPath(filepath.Join(path, entry.Name())))
+							}
+						}
+					}
+				} else if hdr.Size > 0 {
+					buf := getSparseBuf()
+					io.CopyBuffer(io.Discard, e.rc, buf)
+					putSparseBuf(buf)
+				}
+				continue
+
+			case TypeGNUMultiVol:
+				// Close the channel to let the current workers finish their tasks
+				close(taskCh)
+				if err := wg.Wait(); err != nil {
+					return err
+				}
+				// Reset wg with parentCtx and restart the workers
+				wg, ctx = errgroup.WithContext(parentCtx)
+				startWorkers()
+
+				e.synthesizeDir(filepath.Dir(path))
+				f, err := os.OpenFile(fixOSPath(path), os.O_WRONLY|os.O_APPEND|os.O_CREATE, os.FileMode(hdr.Mode))
+				if err != nil {
+					return err
+				}
+				if hdr.Size > 0 {
+					buf := getSparseBuf()
+					_, err = io.CopyBuffer(f, e.rc, buf)
+					putSparseBuf(buf)
+				}
+				f.Close()
+				if err != nil {
+					return err
+				}
+				continue
+
+			case TypeDir:
+				e.synthesizeDir(path)
+				dirs[path] = hdr
+				atomic.AddInt64(&e.entries, 1)
+
+			case TypeSymlink, TypeLink:
+				// Store links and resolve them strictly after extracting regular files to avoid race conditions.
+				links = append(links, hdr)
+				continue
+
+			case TypeChar, TypeBlock, TypeFifo:
+				e.synthesizeDir(filepath.Dir(path))
+				h, p := *hdr, path
 				select {
 				case taskCh <- func() error {
-					defer func() {
-						if len(origDataPtr) > 0 {
+					err := extractSpecialFile(p, &h)
+					if err != nil {
+						return err
+					}
+
+					if e.options.xattrs {
+						applyXattrs(p, &h)
+					}
+
+					uid, gid := resolveIds(&h, e.options.numericOwner)
+					err = lchown(p, uid, gid)
+					if err != nil && e.options.chownErrorHandler != nil {
+						err = e.options.chownErrorHandler(p, err)
+					}
+					if err != nil && e.options.tolerant {
+						fmt.Printf("tar: skipping corrupted special file %q: %v\n", h.Name, err)
+						return nil
+					}
+					atomic.AddInt64(&e.entries, 1)
+					return err
+				}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+
+			case TypeReg, TypeRegA:
+				e.synthesizeDir(filepath.Dir(path))
+
+				// Protection against bombs
+				if e.options.maxFileSize > 0 && hdr.Size > e.options.maxFileSize {
+					return fmt.Errorf("tar: file %q size %d exceeds limit %d", hdr.Name, hdr.Size, e.options.maxFileSize)
+				}
+
+				const memBufferLimit = 16 * 1024 * 1024 // 16MB threshold
+
+				if hdr.Size <= memBufferLimit {
+					// Small files: read into memory and delegate I/O to worker pool
+					var dataPtr []byte
+					var origDataPtr []byte
+					if hdr.Size > 0 {
+						dataPtr = getSmallBuffer(hdr.Size)
+						origDataPtr = dataPtr
+						if _, err = io.ReadFull(e.rc, dataPtr); err != nil {
 							putSmallBuffer(origDataPtr)
+							return err
 						}
-					}()
-					writePath := p
-					hdr := &h
+					}
+
+					if strings.HasSuffix(hdr.Name, ":Zone.Identifier") && len(dataPtr) > 0 {
+						dataPtr = sanitizeZoneIdentifier(dataPtr)
+						hdr.Size = int64(len(dataPtr))
+					}
+
+					h, p := *hdr, path // Local copies for worker
+					select {
+					case taskCh <- func() error {
+						defer func() {
+							if len(origDataPtr) > 0 {
+								putSmallBuffer(origDataPtr)
+							}
+						}()
+						writePath := p
+						hdr := &h
+						if e.options.safeWrites {
+							writePath = p + ".tmp"
+						}
+
+						f, err := os.OpenFile(fixOSPath(writePath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
+						if err != nil {
+							return err
+						}
+
+						cleanup := true
+						defer func() {
+							f.Close()
+							if err != nil && cleanup && !e.options.keepBroken {
+								os.Remove(fixOSPath(writePath))
+							}
+						}()
+
+						if err := preallocate(f, hdr.Size); err != nil {
+							return err
+						}
+
+						if len(dataPtr) > 0 {
+							if e.options.sparse {
+								err = copySparseBytes(f, dataPtr)
+							} else {
+								_, err = f.Write(dataPtr)
+							}
+						}
+						if err == nil {
+							f.Chmod(os.FileMode(hdr.Mode))
+						}
+						f.Close()
+						if err != nil {
+							return err
+						}
+						cleanup = false
+
+						if e.options.xattrs {
+							applyXattrs(writePath, hdr)
+						}
+						e.restoreNtfsAcl(writePath, hdr)
+						if !e.options.noTimes {
+							lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
+						}
+
+						uid, gid := resolveIds(hdr, e.options.numericOwner)
+						err = lchown(writePath, uid, gid)
+						if err != nil && e.options.chownErrorHandler != nil {
+							err = e.options.chownErrorHandler(writePath, err)
+						}
+
+						if e.options.safeWrites {
+							if rerr := os.Rename(fixOSPath(writePath), fixOSPath(p)); rerr != nil {
+								os.Remove(fixOSPath(writePath))
+								return rerr
+							}
+						}
+						if err != nil && e.options.tolerant {
+							fmt.Printf("tar: skipping corrupted file %q: %v\n", hdr.Name, err)
+							return nil
+						}
+						atomic.AddInt64(&e.written, hdr.Size)
+						atomic.AddInt64(&e.entries, 1)
+						return err
+					}:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				} else {
+					// Large files: stream sequentially in the main loop to prevent OOM
+					writePath := path
 					if e.options.safeWrites {
-						writePath = p + ".tmp"
+						writePath = path + ".tmp"
 					}
 
 					f, err := os.OpenFile(fixOSPath(writePath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
@@ -621,144 +695,73 @@ func (e *Extractor) Extract(ctx context.Context) error {
 						}
 					}()
 
-					if err := preallocate(f, hdr.Size); err != nil {
-						return err
+					var r io.Reader = e.rc
+					if e.options.maxDecompressionRatio > 0 && hdr.Size > 0 {
+						// Logic: If the ratio of header.Size to the actual data in the stream
+						// is too high, it's suspicious.
+						// But better: we check how much we've written vs what's expected.
+						// Since we use archive/tar, we can't easily see "compressed" size here,
+						// but we can enforce the limit from the header.
 					}
 
-					if len(dataPtr) > 0 {
-						if e.options.sparse {
-							err = copySparseBytes(f, dataPtr)
-						} else {
-							_, err = f.Write(dataPtr)
+					if e.options.sparse {
+						err = copySparse(f, r, hdr.Size)
+					} else {
+						if err := preallocate(f, hdr.Size); err != nil {
+							return err
 						}
+						// Переиспользуем наш гигантский 1МБ пул буферов вместо дефолтных 32КБ
+						buf := getSparseBuf()
+						_, err = io.CopyBuffer(f, r, buf)
+						putSparseBuf(buf)
 					}
 					if err == nil {
 						f.Chmod(os.FileMode(hdr.Mode))
 					}
-					f.Close()
 					if err != nil {
 						return err
 					}
 					cleanup = false
 
-					if e.options.xattrs {
-						applyXattrs(writePath, hdr)
-					}
-					e.restoreNtfsAcl(writePath, hdr)
-					if !e.options.noTimes {
-						lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
-					}
-
-					uid, gid := resolveIds(hdr, e.options.numericOwner)
-					err = lchown(writePath, uid, gid)
-					if err != nil && e.options.chownErrorHandler != nil {
-						err = e.options.chownErrorHandler(writePath, err)
-					}
-
-					if e.options.safeWrites {
-						if rerr := os.Rename(fixOSPath(writePath), fixOSPath(p)); rerr != nil {
-							os.Remove(fixOSPath(writePath))
-							return rerr
+					// Apply metadata in background to save time
+					h, p := *hdr, writePath // Local copies for worker
+					select {
+					case taskCh <- func() error {
+						hdr := &h
+						writePath := p
+						if e.options.xattrs {
+							applyXattrs(writePath, hdr)
 						}
-					}
-					if err != nil && e.options.tolerant {
-						fmt.Printf("tar: skipping corrupted file %q: %v\n", hdr.Name, err)
-						return nil
-					}
-					atomic.AddInt64(&e.written, hdr.Size)
-					atomic.AddInt64(&e.entries, 1)
-					return err
-				}:
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			} else {
-				// Large files: stream sequentially in the main loop to prevent OOM
-				writePath := path
-				if e.options.safeWrites {
-					writePath = path + ".tmp"
-				}
+						e.restoreNtfsAcl(writePath, hdr)
+						if !e.options.noTimes {
+							lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
+						}
 
-				f, err := os.OpenFile(fixOSPath(writePath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode))
-				if err != nil {
-					return err
-				}
+						uid, gid := resolveIds(hdr, e.options.numericOwner)
+						err := lchown(writePath, uid, gid)
+						if err != nil && e.options.chownErrorHandler != nil {
+							err = e.options.chownErrorHandler(writePath, err)
+						}
 
-				cleanup := true
-				defer func() {
-					f.Close()
-					if err != nil && cleanup && !e.options.keepBroken {
-						os.Remove(fixOSPath(writePath))
-					}
-				}()
-
-				var r io.Reader = e.rc
-				if e.options.maxDecompressionRatio > 0 && hdr.Size > 0 {
-					// Logic: If the ratio of header.Size to the actual data in the stream
-					// is too high, it's suspicious.
-					// But better: we check how much we've written vs what's expected.
-					// Since we use archive/tar, we can't easily see "compressed" size here,
-					// but we can enforce the limit from the header.
-				}
-
-				if e.options.sparse {
-					err = copySparse(f, r, hdr.Size)
-				} else {
-					if err := preallocate(f, hdr.Size); err != nil {
+						if e.options.safeWrites {
+							if rerr := os.Rename(fixOSPath(writePath), fixOSPath(path)); rerr != nil {
+								os.Remove(fixOSPath(writePath))
+								return rerr
+							}
+						}
+						if err != nil && e.options.tolerant {
+							fmt.Printf("tar: skipping corrupted file %q: %v\n", hdr.Name, err)
+							return nil
+						}
+						atomic.AddInt64(&e.written, hdr.Size)
+						atomic.AddInt64(&e.entries, 1)
 						return err
+					}:
+					case <-ctx.Done():
+						return ctx.Err()
 					}
-					// Переиспользуем наш гигантский 1МБ пул буферов вместо дефолтных 32КБ
-					buf := getSparseBuf()
-					_, err = io.CopyBuffer(f, r, buf)
-					putSparseBuf(buf)
-				}
-				if err == nil {
-					f.Chmod(os.FileMode(hdr.Mode))
-				}
-				if err != nil {
-					return err
-				}
-				cleanup = false
-
-				// Apply metadata in background to save time
-				h, p := *hdr, writePath // Local copies for worker
-				select {
-				case taskCh <- func() error {
-					hdr := &h
-					writePath := p
-					if e.options.xattrs {
-						applyXattrs(writePath, hdr)
-					}
-					e.restoreNtfsAcl(writePath, hdr)
-					if !e.options.noTimes {
-						lchtimes(writePath, hdr.AccessTime, hdr.ModTime)
-					}
-
-					uid, gid := resolveIds(hdr, e.options.numericOwner)
-					err := lchown(writePath, uid, gid)
-					if err != nil && e.options.chownErrorHandler != nil {
-						err = e.options.chownErrorHandler(writePath, err)
-					}
-
-					if e.options.safeWrites {
-						if rerr := os.Rename(fixOSPath(writePath), fixOSPath(path)); rerr != nil {
-							os.Remove(fixOSPath(writePath))
-							return rerr
-						}
-					}
-					if err != nil && e.options.tolerant {
-						fmt.Printf("tar: skipping corrupted file %q: %v\n", hdr.Name, err)
-						return nil
-					}
-					atomic.AddInt64(&e.written, hdr.Size)
-					atomic.AddInt64(&e.entries, 1)
-					return err
-				}:
-				case <-ctx.Done():
-					return ctx.Err()
 				}
 			}
-		}
 		}
 		return nil
 	}()
@@ -790,16 +793,16 @@ func (e *Extractor) Extract(ctx context.Context) error {
 		if hdr.Typeflag == TypeSymlink {
 			if runtime.GOOS == "windows" {
 				isDir := false
-			if fi, err := os.Stat(fixOSPath(filepath.Join(filepath.Dir(path), hdrLinkname))); err == nil {
-				isDir = fi.IsDir()
-			}
+				if fi, err := os.Stat(fixOSPath(filepath.Join(filepath.Dir(path), hdrLinkname))); err == nil {
+					isDir = fi.IsDir()
+				}
 				if err := createWindowsSymlink(hdrLinkname, path, isDir); err != nil {
 					return err
 				}
 			} else {
-			if err := os.Symlink(hdrLinkname, fixOSPath(path)); err != nil {
-				return err
-			}
+				if err := os.Symlink(hdrLinkname, fixOSPath(path)); err != nil {
+					return err
+				}
 			}
 		} else {
 			targetPath := filepath.Join(e.chroot, hdrLinkname)
@@ -890,6 +893,7 @@ func (e *Extractor) linksToDirs(targetPath string) error {
 	}
 	return nil
 }
+
 // synthesizeDir guarantees that a directory exists on disk,
 // recovering missing structures and resolving file/directory conflicts on the fly.
 func (e *Extractor) synthesizeDir(targetDir string) error {

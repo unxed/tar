@@ -2,8 +2,8 @@ package tar
 
 import (
 	"bytes"
-	"context"
 	"compress/gzip"
+	"context"
 	"encoding/binary"
 	"io"
 	"io/fs"
@@ -263,6 +263,7 @@ func TestGzipMultistreamResumption(t *testing.T) {
 		t.Fatalf("Resumed stream data mismatch: expected length %d, got %d", len(expectedResumed), len(resDecoded))
 	}
 }
+
 // TestGzipHeaderMetadataParsing verifies that the manual GZIP header parser
 // in gzipIndexTrackingReader successfully skips FEXTRA, FNAME, and FCOMMENT fields
 // and correctly extracts the underlying deflate stream.
@@ -294,6 +295,7 @@ func TestGzipHeaderMetadataParsing(t *testing.T) {
 		t.Errorf("Payload mismatch!\nExpected: %q\nGot:      %q", string(payload), string(decoded))
 	}
 }
+
 // TestGzipResumeInvalidIndex verifies that ResumeFromGzipIndex returns clean
 // errors when provided with malformed, corrupted, or unsupported GZIDX index data.
 func TestGzipResumeInvalidIndex(t *testing.T) {
@@ -340,6 +342,7 @@ func TestGzipResumeInvalidIndex(t *testing.T) {
 		t.Errorf("Expected 'tar: unsupported GZIDX version: 2' error, got: %v", err)
 	}
 }
+
 // TestXzRandomAccess verifies native XZ index parsing and O(1) block-level seeking.
 func TestXzRandomAccess(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -362,7 +365,9 @@ func TestXzRandomAccess(t *testing.T) {
 
 	files := make(map[string]os.FileInfo)
 	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		files[path] = info
 		return nil
 	})

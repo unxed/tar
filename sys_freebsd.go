@@ -94,4 +94,3 @@ func applyXattrs(path string, hdr *tar.Header) error {
 	}
 	return nil
 }
-

@@ -1,11 +1,12 @@
 //go:build !freebsd && !openbsd && !netbsd && !dragonfly && !solaris && !illumos
+
 package tar
 
 import (
-	"database/sql"
-	"time"
-	"fmt"
 	"bytes"
+	"database/sql"
+	"fmt"
+	"time"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
@@ -95,13 +96,17 @@ func (idx *Index) Close() error {
 func (idx *Index) InitMetadata() error {
 	_, err1 := idx.db.Exec(`INSERT OR IGNORE INTO versions (name, version, major, minor, patch) VALUES ('ratarmount', '1.3.0', 1, 3, 0)`)
 	_, err2 := idx.db.Exec(`INSERT OR IGNORE INTO versions (name, version, major, minor, patch) VALUES ('index', '0.7.0', 0, 7, 0)`)
-	if err1 != nil { return err1 }
+	if err1 != nil {
+		return err1
+	}
 	return err2
 }
 
 func (idx *Index) Insert(nodes []FileNode) error {
 	tx, err := idx.db.Begin()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO files (
@@ -110,15 +115,24 @@ func (idx *Index) Insert(nodes []FileNode) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT DO NOTHING
 	`)
-	if err != nil { tx.Rollback(); return err }
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
 	defer stmt.Close()
 
 	stmtXattr, err := tx.Prepare(`INSERT INTO xattrs (offsetheader, key, value) VALUES (?, ?, ?)`)
-	if err != nil { tx.Rollback(); return err }
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
 	defer stmtXattr.Close()
 
 	stmtAcl, err := tx.Prepare(`INSERT INTO acls (offsetheader, acl) VALUES (?, ?)`)
-	if err != nil { tx.Rollback(); return err }
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
 	defer stmtAcl.Close()
 
 	for _, n := range nodes {
@@ -126,16 +140,25 @@ func (idx *Index) Insert(nodes []FileNode) error {
 			n.Path, n.Name, n.OffsetHeader, n.Offset, n.Size, float64(n.ModTime.UnixNano())/1e9,
 			n.Mode, n.Type, n.LinkName, n.Uid, n.Gid, n.IsTar, n.IsSparse, n.IsGenerated, n.RecursionDepth,
 		)
-		if err != nil { tx.Rollback(); return err }
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
 		aff, _ := res.RowsAffected()
 		if aff > 0 {
 			for k, v := range n.Xattrs {
 				_, err = stmtXattr.Exec(n.OffsetHeader, k, v)
-				if err != nil { tx.Rollback(); return err }
+				if err != nil {
+					tx.Rollback()
+					return err
+				}
 			}
 			if len(n.Acl) > 0 {
 				_, err = stmtAcl.Exec(n.OffsetHeader, n.Acl)
-				if err != nil { tx.Rollback(); return err }
+				if err != nil {
+					tx.Rollback()
+					return err
+				}
 			}
 		}
 	}
@@ -152,14 +175,19 @@ func (idx *Index) Lookup(p string) (*FileNode, error) {
 	var mtime float64
 	n.Path, n.Name = dir, name
 	err := row.Scan(&n.OffsetHeader, &n.Offset, &n.Size, &mtime, &n.Mode, &n.Type, &n.LinkName, &n.Uid, &n.Gid, &n.IsTar, &n.IsSparse, &n.IsGenerated, &n.RecursionDepth)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	n.Xattrs = make(map[string][]byte)
 	xRows, err := idx.db.Query(`SELECT key, value FROM xattrs WHERE offsetheader = ?`, n.OffsetHeader)
 	if err == nil {
 		defer xRows.Close()
 		for xRows.Next() {
-			var k string; var v []byte
-			if xRows.Scan(&k, &v) == nil { n.Xattrs[k] = v }
+			var k string
+			var v []byte
+			if xRows.Scan(&k, &v) == nil {
+				n.Xattrs[k] = v
+			}
 		}
 	}
 	aRow := idx.db.QueryRow(`SELECT acl FROM acls WHERE offsetheader = ?`, n.OffsetHeader)
@@ -171,16 +199,27 @@ func (idx *Index) Lookup(p string) (*FileNode, error) {
 func (idx *Index) List(p string) ([]FileNode, error) {
 	dir, name := normalizePath(p)
 	fullPath := dir
-	if name != "" { if dir == "/" { fullPath = "/" + name } else { fullPath = dir + "/" + name } }
+	if name != "" {
+		if dir == "/" {
+			fullPath = "/" + name
+		} else {
+			fullPath = dir + "/" + name
+		}
+	}
 	rows, err := idx.db.Query(`SELECT name, offsetheader, offset, size, mtime, mode, type, linkname, uid, gid, istar, issparse, isgenerated, recursiondepth FROM files WHERE path = ? GROUP BY name HAVING offset = MAX(offset)`, fullPath)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var res []FileNode
 	for rows.Next() {
-		var n FileNode; var mtime float64
+		var n FileNode
+		var mtime float64
 		n.Path = fullPath
 		err := rows.Scan(&n.Name, &n.OffsetHeader, &n.Offset, &n.Size, &mtime, &n.Mode, &n.Type, &n.LinkName, &n.Uid, &n.Gid, &n.IsTar, &n.IsSparse, &n.IsGenerated, &n.RecursionDepth)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		n.ModTime = time.Unix(0, int64(mtime*1e9))
 		res = append(res, n)
 	}
@@ -190,8 +229,11 @@ func (idx *Index) List(p string) ([]FileNode, error) {
 		if xRows != nil {
 			defer xRows.Close()
 			for xRows.Next() {
-				var k string; var v []byte
-				if xRows.Scan(&k, &v) == nil { res[i].Xattrs[k] = v }
+				var k string
+				var v []byte
+				if xRows.Scan(&k, &v) == nil {
+					res[i].Xattrs[k] = v
+				}
 			}
 		}
 		aRow := idx.db.QueryRow(`SELECT acl FROM acls WHERE offsetheader = ?`, res[i].OffsetHeader)
@@ -203,40 +245,68 @@ func (idx *Index) List(p string) ([]FileNode, error) {
 func (idx *Index) RecursiveSize(p string) (int64, error) {
 	dir, name := normalizePath(p)
 	fullPath := dir
-	if name != "" { if dir == "/" { fullPath = "/" + name } else { fullPath = dir + "/" + name } }
+	if name != "" {
+		if dir == "/" {
+			fullPath = "/" + name
+		} else {
+			fullPath = dir + "/" + name
+		}
+	}
 	query := `WITH latest_files AS (SELECT size FROM files WHERE (path = ? OR path LIKE ?) GROUP BY path, name HAVING offsetheader = MAX(offsetheader)) SELECT COALESCE(SUM(size), 0) FROM latest_files`
-	if fullPath == "/" { query = `WITH latest_files AS (SELECT size FROM files GROUP BY path, name HAVING offsetheader = MAX(offsetheader)) SELECT COALESCE(SUM(size), 0) FROM latest_files` }
+	if fullPath == "/" {
+		query = `WITH latest_files AS (SELECT size FROM files GROUP BY path, name HAVING offsetheader = MAX(offsetheader)) SELECT COALESCE(SUM(size), 0) FROM latest_files`
+	}
 	var size int64
 	var err error
-	if fullPath == "/" { err = idx.db.QueryRow(query).Scan(&size) } else { err = idx.db.QueryRow(query, fullPath, fullPath+"/%").Scan(&size) }
+	if fullPath == "/" {
+		err = idx.db.QueryRow(query).Scan(&size)
+	} else {
+		err = idx.db.QueryRow(query, fullPath, fullPath+"/%").Scan(&size)
+	}
 	return size, err
 }
 
 func (idx *Index) InsertBlockOffsets(table string, offsets []BlockOffset) error {
 	tx, err := idx.db.Begin()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	stmt, err := tx.Prepare(fmt.Sprintf(`INSERT OR REPLACE INTO "%s" (blockoffset, dataoffset) VALUES (?, ?)`, table))
-	if err != nil { tx.Rollback(); return err }
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
 	defer stmt.Close()
-	for _, o := range offsets { if _, err = stmt.Exec(o.BlockOffset, o.DataOffset); err != nil { tx.Rollback(); return err } }
+	for _, o := range offsets {
+		if _, err = stmt.Exec(o.BlockOffset, o.DataOffset); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
 func (idx *Index) GetClosestBlockOffset(table string, targetDataOffset int64) (*BlockOffset, error) {
 	var bo BlockOffset
 	err := idx.db.QueryRow(fmt.Sprintf(`SELECT blockoffset, dataoffset FROM "%s" WHERE dataoffset <= ? ORDER BY dataoffset DESC LIMIT 1`, table), targetDataOffset).Scan(&bo.BlockOffset, &bo.DataOffset)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return &bo, nil
 }
 
 func (idx *Index) GetGzipIndex() ([]byte, error) {
 	rows, err := idx.db.Query(`SELECT data FROM gzipindexes ORDER BY rowid`)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var buf bytes.Buffer
 	for rows.Next() {
 		var chunk []byte
-		if err := rows.Scan(&chunk); err != nil { return nil, err }
+		if err := rows.Scan(&chunk); err != nil {
+			return nil, err
+		}
 		buf.Write(chunk)
 	}
 	return buf.Bytes(), nil
@@ -244,13 +314,20 @@ func (idx *Index) GetGzipIndex() ([]byte, error) {
 
 func (idx *Index) SaveGzipIndex(data []byte) error {
 	tx, err := idx.db.Begin()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	_, _ = tx.Exec(`DELETE FROM gzipindexes`)
 	const maxChunk = 256 * 1024 * 1024
 	for i := 0; i < len(data); i += maxChunk {
 		end := i + maxChunk
-		if end > len(data) { end = len(data) }
-		if _, err = tx.Exec(`INSERT INTO gzipindexes (data) VALUES (?)`, data[i:end]); err != nil { tx.Rollback(); return err }
+		if end > len(data) {
+			end = len(data)
+		}
+		if _, err = tx.Exec(`INSERT INTO gzipindexes (data) VALUES (?)`, data[i:end]); err != nil {
+			tx.Rollback()
+			return err
+		}
 	}
 	return tx.Commit()
 }

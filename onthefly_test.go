@@ -1,4 +1,5 @@
 //go:build !freebsd && !openbsd && !netbsd && !dragonfly && !solaris && !illumos
+
 package tar
 
 import (
@@ -141,12 +142,18 @@ func TestArchiver_OnTheFlyIndex(t *testing.T) {
 
 func methodName(m uint16) string {
 	switch m {
-	case Store: return "Store"
-	case GZIP:  return "GZIP"
-	case BZIP2: return "BZIP2"
-	case XZ:    return "XZ"
-	case ZSTD:  return "ZSTD"
-	default:    return "Unknown"
+	case Store:
+		return "Store"
+	case GZIP:
+		return "GZIP"
+	case BZIP2:
+		return "BZIP2"
+	case XZ:
+		return "XZ"
+	case ZSTD:
+		return "ZSTD"
+	default:
+		return "Unknown"
 	}
 }
 

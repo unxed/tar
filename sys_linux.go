@@ -9,9 +9,9 @@ import (
 	"os"
 	"os/user"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
-	"sync"
 
 	"golang.org/x/sys/unix"
 )
@@ -168,4 +168,3 @@ func applyXattrs(path string, hdr *tar.Header) error {
 	}
 	return nil
 }
-

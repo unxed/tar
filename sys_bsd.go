@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"sync"
 	"syscall"
 	"time"
-	"sync"
 
 	"golang.org/x/sys/unix"
 )
@@ -106,4 +106,3 @@ func extractSpecialFile(path string, hdr *tar.Header) error {
 	dev := unix.Mkdev(uint32(hdr.Devmajor), uint32(hdr.Devminor))
 	return mknod(path, mode, dev)
 }
-

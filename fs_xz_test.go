@@ -1,4 +1,5 @@
 //go:build !freebsd && !openbsd && !netbsd && !dragonfly && !solaris && !illumos
+
 package tar
 
 import (
@@ -60,7 +61,7 @@ func TestTarFS_XZRandomAccess(t *testing.T) {
 	if err := os.WriteFile(arcPath, xzBuf.Bytes(), 0644); err != nil {
 		t.Fatal(err)
 	}
-    
+
 	// 4. Open with TarFS
 	tfs, err := NewFS(arcPath, "")
 	if err != nil {

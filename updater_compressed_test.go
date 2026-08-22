@@ -2,7 +2,7 @@ package tar
 
 import (
 	"context"
-    "io"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"

@@ -3,8 +3,8 @@ package tar
 import (
 	"archive/tar"
 	"bufio"
-	"io"
 	"errors"
+	"io"
 	"os"
 	"sync"
 )

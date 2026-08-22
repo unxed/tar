@@ -1,13 +1,13 @@
 package tar
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
-    "runtime"
-    "bytes"
 )
 
 func TestExtractor_KeepOldFiles(t *testing.T) {

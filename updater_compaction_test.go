@@ -47,7 +47,9 @@ func TestUpdater_Compaction(t *testing.T) {
 	found2 := false
 	for {
 		hdr, err := tr.Next()
-		if err == io.EOF { break }
+		if err == io.EOF {
+			break
+		}
 		if hdr.Name == "file2.txt" {
 			found2 = true
 			content, _ := io.ReadAll(tr)

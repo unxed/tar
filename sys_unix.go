@@ -4,10 +4,10 @@
 package tar
 
 import (
-    "sync"
 	"os"
 	"os/user"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -83,6 +83,7 @@ func resolveIds(hdr *Header, numericOwner bool) (int, int) {
 	}
 	return uid, gid
 }
+
 var (
 	uidCache   = make(map[string]int)
 	gidCache   = make(map[string]int)

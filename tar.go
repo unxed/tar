@@ -53,6 +53,7 @@ var (
 	ErrFieldTooLong    = tar.ErrFieldTooLong
 	ErrWriteAfterClose = tar.ErrWriteAfterClose
 )
+
 // Abstraction hooks for NTFS security and stream operations to support unit testing on non-Windows platforms.
 var (
 	getFileSecurityFunc           = getFileSecurity

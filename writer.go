@@ -320,7 +320,11 @@ func (wc *WriteCloser) Close() error {
 			err3 = err
 		}
 	}
-	if err1 != nil { return err1 }
-	if err2 != nil { return err2 }
+	if err1 != nil {
+		return err1
+	}
+	if err2 != nil {
+		return err2
+	}
 	return err3
 }

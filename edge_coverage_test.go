@@ -1,9 +1,9 @@
 package tar
 
 import (
-    "path/filepath"
 	"bytes"
 	"io"
+	"path/filepath"
 	"testing"
 )
 

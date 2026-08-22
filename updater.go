@@ -290,7 +290,9 @@ func (u *Updater) Close() error {
 	}
 	if u.comp != nil {
 		if cerr := u.comp.Close(); cerr != nil {
-			if err == nil { err = cerr }
+			if err == nil {
+				err = cerr
+			}
 		}
 	}
 	// Буфер удален.

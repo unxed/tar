@@ -4,9 +4,9 @@
 package tar
 
 import (
-    "io"
 	"archive/tar"
 	"encoding/base64"
+	"io"
 	"os"
 	"strings"
 	"syscall"

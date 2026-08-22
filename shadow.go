@@ -1,10 +1,10 @@
 package tar
 
 import (
-    "bytes"
+	"bufio"
+	"bytes"
 	"encoding/binary"
 	"io"
-    "bufio"
 	"strings"
 )
 
@@ -54,7 +54,7 @@ func WriteMagicFooter(w io.Writer, method uint16, shadowStart, shadowSize int64)
 		binary.LittleEndian.PutUint16(buf[10:12], 28)
 
 		// 3. FEXTRA Payload
-		buf[12], buf[13] = 'F', '4' // Subfield ID
+		buf[12], buf[13] = 'F', '4'                   // Subfield ID
 		binary.LittleEndian.PutUint16(buf[14:16], 24) // Subfield length
 		binary.LittleEndian.PutUint64(buf[16:24], uint64(shadowStart))
 		binary.LittleEndian.PutUint64(buf[24:32], uint64(shadowSize))
