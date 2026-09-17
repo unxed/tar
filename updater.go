@@ -51,9 +51,11 @@ type Updater struct {
 	method uint16
 	opts   []WriterOption
 
-	// Uncompressed archives.
-	tw    *tar.Writer
-	spans []entrySpan
+	// Uncompressed archives. The archive is cut back to entriesEnd when the
+	// first entry is appended; tw is nil until then.
+	tw         *tar.Writer
+	spans      []entrySpan
+	entriesEnd int64
 
 	// Compressed archives.
 	srcLimit  int64
@@ -80,7 +82,6 @@ func NewUpdater(f *os.File, mode AppendMode, opts ...WriterOption) (*Updater, er
 	}
 	u := &Updater{f: f, method: Store, opts: opts}
 	if stat.Size() == 0 {
-		u.tw = tar.NewWriter(f)
 		return u, nil
 	}
 
@@ -108,14 +109,11 @@ func NewUpdater(f *os.File, mode AppendMode, opts ...WriterOption) (*Updater, er
 		if err != nil {
 			return nil, err
 		}
-		if err := f.Truncate(end); err != nil {
-			return nil, err
-		}
-		if _, err := f.Seek(end, io.SeekStart); err != nil {
-			return nil, err
-		}
-		u.tw = tar.NewWriter(f)
+		// Nothing is cut until an entry is appended: an updater that is
+		// closed without one, as when a removal it does not support
+		// fails, leaves the archive and its embedded index as they were.
 		u.spans = spans
+		u.entriesEnd = end
 		return u, nil
 	}
 
@@ -220,6 +218,15 @@ func (u *Updater) AppendHeader(hdr *Header, r io.Reader) error {
 		return writeEntry(u.pendingTW, hdr, r)
 	}
 
+	if u.tw == nil {
+		if err := u.f.Truncate(u.entriesEnd); err != nil {
+			return err
+		}
+		if _, err := u.f.Seek(u.entriesEnd, io.SeekStart); err != nil {
+			return err
+		}
+		u.tw = tar.NewWriter(u.f)
+	}
 	if err := u.tw.Flush(); err != nil {
 		return err
 	}
@@ -307,6 +314,9 @@ func writeEntry(tw *tar.Writer, hdr *tar.Header, r io.Reader) error {
 
 func (u *Updater) Close() error {
 	if u.pending == nil {
+		if u.tw == nil {
+			return nil
+		}
 		return u.tw.Close()
 	}
 	defer func() {
