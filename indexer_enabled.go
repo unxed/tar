@@ -12,7 +12,22 @@ import (
 	"unicode/utf8"
 )
 
+// IndexArchive builds the index of an archive at indexPath. An index that
+// could not be finished is removed again: the next open of the archive finds
+// the file, takes it for a finished index and lists an empty archive without
+// reporting anything (f4 issue #1187, where a tar.xz that cannot be
+// decompressed at all opened as empty on the second try).
 func IndexArchive(archivePath, indexPath string) error {
+	err := indexArchive(archivePath, indexPath)
+	if err != nil {
+		// Removing it is best effort: there is already an error to
+		// report, and a leftover index is what this guards against.
+		_ = os.Remove(indexPath)
+	}
+	return err
+}
+
+func indexArchive(archivePath, indexPath string) error {
 	ra, size, err := OpenMultiVolume(archivePath, os.O_RDONLY)
 	if err != nil {
 		return err
