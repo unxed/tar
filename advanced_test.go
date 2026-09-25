@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"testing"
 	"time"
 )
@@ -649,42 +650,38 @@ func TestZstdDecoderPooling(t *testing.T) {
 
 	compressedData := buf.Bytes()
 
+	// sync.Pool does not promise to hand back what was put: a collection
+	// empties it, and an object put on one P is not seen by Get on
+	// another P if the goroutine moved in between. So turn the collector
+	// off and require the decoder to be reused at least once in a number
+	// of rounds, instead of in exactly the next one.
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+
 	format := zstdFormat{}
-	dec1, err := format.Decompress(bytes.NewReader(compressedData))
-	if err != nil {
-		t.Fatalf("Decompress 1 failed: %v", err)
-	}
-	pdec1, ok := dec1.(*pooledTarZstdReader)
-	if !ok {
-		t.Fatal("expected pooledTarZstdReader")
-	}
-	underlyingDec1 := pdec1.dec
+	seen := make(map[*zstd.Decoder]bool)
+	for i := 0; i < 100; i++ {
+		dec, err := format.Decompress(bytes.NewReader(compressedData))
+		if err != nil {
+			t.Fatalf("Decompress %d failed: %v", i, err)
+		}
+		pdec, ok := dec.(*pooledTarZstdReader)
+		if !ok {
+			t.Fatal("expected pooledTarZstdReader")
+		}
+		underlying := pdec.dec
 
-	decomp1, err := io.ReadAll(dec1)
-	if err != nil || !bytes.Equal(decomp1, data) {
-		t.Fatalf("decomp 1 mismatch: got %q, err: %v", string(decomp1), err)
-	}
-	dec1.Close()
+		decomp, err := io.ReadAll(dec)
+		if err != nil || !bytes.Equal(decomp, data) {
+			t.Fatalf("decomp %d mismatch: got %q, err: %v", i, string(decomp), err)
+		}
+		dec.Close()
 
-	dec2, err := format.Decompress(bytes.NewReader(compressedData))
-	if err != nil {
-		t.Fatalf("Decompress 2 failed: %v", err)
+		if seen[underlying] {
+			return
+		}
+		seen[underlying] = true
 	}
-	pdec2, ok := dec2.(*pooledTarZstdReader)
-	if !ok {
-		t.Fatal("expected pooledTarZstdReader")
-	}
-	underlyingDec2 := pdec2.dec
-
-	decomp2, err := io.ReadAll(dec2)
-	if err != nil || !bytes.Equal(decomp2, data) {
-		t.Fatalf("decomp 2 mismatch: got %q, err: %v", string(decomp2), err)
-	}
-	dec2.Close()
-
-	if underlyingDec1 != underlyingDec2 {
-		t.Error("expected zstd.Decoder to be pooled and reused, but got different instances")
-	}
+	t.Error("expected zstd.Decoder to be pooled and reused, but every round got a new instance")
 }
 
 // TestEmbeddedShadowExtraPayloads verifies that standard index payloads (GZIDX and DZIDX)
