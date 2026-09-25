@@ -149,8 +149,12 @@ func TestExtractor_ZipBomb(t *testing.T) {
 	f.Close()
 
 	// Limit to 1024 bytes
-	e, _ := NewExtractor(archivePath, dstDir, WithExtractorMaxFileSize(1024))
-	err := e.Extract(context.Background())
+	e, err := NewExtractor(archivePath, dstDir, WithExtractorMaxFileSize(1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	err = e.Extract(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "exceeds limit") {
 		t.Errorf("expected size limit error, got: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -22,8 +23,16 @@ func TestPUA_EncodingPreservation(t *testing.T) {
 	f.Close()
 
 	// Извлекаем
-	e, _ := NewExtractor(archivePath, dstDir)
-	err := e.Extract(context.Background())
+	e, err := NewExtractor(archivePath, dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	err = e.Extract(context.Background())
+	if err != nil && strings.Contains(err.Error(), "illegal byte sequence") {
+		// e.g. APFS on macOS only accepts valid UTF-8 names (EILSEQ)
+		t.Skipf("filesystem cannot represent non-UTF-8 file names: %v", err)
+	}
 	if err != nil {
 		t.Fatalf("Extraction failed: %v", err)
 	}
