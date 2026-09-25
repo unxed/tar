@@ -227,17 +227,17 @@ func TestEmbeddedIndexExternalCompatibility(t *testing.T) {
 		dstDir := filepath.Join(tmpDir, name+"_dst")
 		os.MkdirAll(dstDir, 0755)
 
-		args := []string{"-xzf", archivePath, "-C", dstDir}
+		// Use paths relative to tmpDir: GNU tar treats "C:\..." as host:path
+		// (remote archive) on Windows.
+		args := []string{"-xzf", filepath.Base(archivePath), "-C", filepath.Base(dstDir)}
 		if ignoreZeros {
 			args = append(args, "-i")
 		}
 
 		cmd := exec.Command(binPath, args...)
+		cmd.Dir = tmpDir
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			if ignoreZeros && strings.Contains(err.Error(), "invalid option") {
-				return
-			}
 			t.Fatalf("%s failed: %v, output: %s", name, err, string(output))
 		}
 
@@ -265,7 +265,13 @@ func TestEmbeddedIndexExternalCompatibility(t *testing.T) {
 
 	if hasTar {
 		verifyExtraction(tarPath, "tar", false)
-		verifyExtraction(tarPath, "tar_ignore_zeros", true)
+		// -i (--ignore-zeros) is a GNU tar extension; BSD tar (default on
+		// macOS and Windows) does not support it.
+		if out, err := exec.Command(tarPath, "--version").CombinedOutput(); err == nil && strings.Contains(string(out), "GNU tar") {
+			verifyExtraction(tarPath, "tar_ignore_zeros", true)
+		} else {
+			t.Logf("%s is not GNU tar, skipping --ignore-zeros check", tarPath)
+		}
 	}
 	if hasBsdTar {
 		verifyExtraction(bsdtarPath, "bsdtar", false)

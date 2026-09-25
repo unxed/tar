@@ -229,8 +229,11 @@ func TestCreateWriter_InvalidParams(t *testing.T) {
 	}
 
 	// Попытка создать с уровнем сжатия для метода Store (который не поддерживает уровни)
-	_, err = CreateWriter(filepath.Join(t.TempDir(), "store.tar"), Store, WithWriterLevel(9))
+	// Store просто игнорирует уровень, это корректно.
+	w, err := CreateWriter(filepath.Join(t.TempDir(), "store.tar"), Store, WithWriterLevel(9))
 	if err != nil {
-		// Store просто игнорирует уровень, это корректно.
+		t.Errorf("unexpected error for Store with level: %v", err)
+	} else {
+		w.Close()
 	}
 }

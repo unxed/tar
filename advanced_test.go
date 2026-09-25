@@ -522,8 +522,12 @@ func TestTolerantMode_Tar(t *testing.T) {
 	f.Close()
 
 	// Extract with TolerantMode(true)
-	e, _ := NewExtractor(archivePath, dstDir, WithExtractorTolerant(true))
-	err := e.Extract(context.Background())
+	e, err := NewExtractor(archivePath, dstDir, WithExtractorTolerant(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	err = e.Extract(context.Background())
 	// In TAR, an error will come from the Next() loop if the structure is completely broken,
 	// but if Next() succeeded and Copy() failed, tolerant mode will save it.
 	_ = err
