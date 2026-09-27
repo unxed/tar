@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type ArchiverOption func(*archiverOptions) error
@@ -30,6 +31,9 @@ type archiverOptions struct {
 	lock        bool
 	level       int
 	pathMapping map[string]string
+
+	deterministic     bool
+	deterministicTime time.Time
 }
 
 // WithArchiverPathMapping sets the path mapping for logical names in the archive.
@@ -91,6 +95,36 @@ func WithArchiverRecovery(pct int) ArchiverOption {
 func WithArchiverXattrs(b bool) ArchiverOption {
 	return func(o *archiverOptions) error {
 		o.xattrs = b
+		return nil
+	}
+}
+
+// WithArchiverDeterministic enables "torrenttar"-style deterministic output,
+// analogous to the torrentzip convention for ZIP: combined with the
+// alphabetical entry order Archive already produces, it normalizes every
+// entry's mtime/atime/ctime, uid/gid, resolved owner/group names and
+// platform-specific extended metadata (POSIX ACLs, SELinux labels, other
+// xattrs, Windows security descriptors), none of which are part of the
+// archived content itself but which otherwise make the .tar depend on when,
+// where and as whom it was built. With this enabled, archiving the same
+// file tree twice always produces a byte-identical archive. The fixed
+// modification time defaults to the Unix epoch; use
+// WithArchiverDeterministicTime to pick a different one (e.g. a build's
+// SOURCE_DATE_EPOCH).
+func WithArchiverDeterministic(b bool) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.deterministic = b
+		return nil
+	}
+}
+
+// WithArchiverDeterministicTime is like WithArchiverDeterministic(true) but
+// pins the fixed modification time recorded for every entry to t instead of
+// the Unix epoch.
+func WithArchiverDeterministicTime(t time.Time) ArchiverOption {
+	return func(o *archiverOptions) error {
+		o.deterministic = true
+		o.deterministicTime = t
 		return nil
 	}
 }
@@ -596,6 +630,10 @@ func (a *Archiver) Archive(ctx context.Context, files map[string]os.FileInfo) er
 			hdr.Typeflag = TypeLink
 			hdr.Linkname = task.link
 			hdr.Size = 0
+		}
+
+		if a.options.deterministic {
+			applyDeterministicHeader(hdr, a.options.deterministicTime)
 		}
 
 		a.m.Lock()
