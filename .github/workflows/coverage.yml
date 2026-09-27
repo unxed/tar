@@ -28,3 +28,13 @@ jobs:
           path: |
             coverage.out
             coverage.txt
+      # tarindex_simple (see tarindex_simple.go) is an opt-in build tag that
+      # swaps the sqlite-backed Index for the FlatBuffers-backed ArcidxIndex
+      # (arcidx_index.go). The steps above never compile that code path at
+      # all, since it is gated behind the tag, so build and test it here
+      # explicitly - this is the only way tarindex_simple.go, arcidx_index.go
+      # and their tests ever get exercised in CI.
+      - name: Build (tarindex_simple)
+        run: go build -tags tarindex_simple ./...
+      - name: Test (tarindex_simple)
+        run: go test -tags tarindex_simple ./...
