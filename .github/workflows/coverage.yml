@@ -12,6 +12,12 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # id-token: write lets codecov-action mint an OIDC token and upload
+    # without a CODECOV_TOKEN secret (see the Codecov step below). The rest
+    # of this job needs no elevated permissions.
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -28,6 +34,33 @@ jobs:
           path: |
             coverage.out
             coverage.txt
+
+      # tar (this repo) has no CODECOV_TOKEN secret and this job cannot
+      # create one (that is an owner action under Settings -> Secrets and
+      # variables -> Actions), so this uses OIDC instead: codecov-action
+      # mints its own token from the `id-token: write` permission above,
+      # which needs no secret and works for a public repo's own branches
+      # and same-repo pull requests. It does not work for pull_request runs
+      # from forks (forks are not granted id-token), but fail_ci_if_error
+      # keeps that from failing CI either way.
+      #
+      # If OIDC turns out to be unreliable in practice, switch this to
+      # token: ${{ secrets.CODECOV_TOKEN }} once the owner adds a
+      # CODECOV_TOKEN secret for this repo: Codecov -> tar -> Settings ->
+      # General -> repository upload token, then GitHub -> unxed/tar ->
+      # Settings -> Secrets and variables -> Actions -> New repository
+      # secret named CODECOV_TOKEN.
+      - name: Upload coverage to Codecov
+        if: hashFiles('coverage.out') != ''
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage.out
+          disable_search: true
+          use_oidc: true
+          # Coverage is a report, not a gate: a failed upload must not turn
+          # the test run red.
+          fail_ci_if_error: false
+
       # tarindex_simple (see tarindex_simple.go) is an opt-in build tag that
       # swaps the sqlite-backed Index for the FlatBuffers-backed ArcidxIndex
       # (arcidx_index.go). The steps above never compile that code path at
