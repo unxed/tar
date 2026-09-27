@@ -23,6 +23,7 @@ This library is built with strict adherence to the following design constraints:
 * **High Performance:** Uses `klauspost/compress` for highly-parallelized `ZStandard` and optimized `Gzip` compression streams.
 * **Broad Compression Support:** Built-in automatic format detection (magic bytes) for `GZIP`, `BZIP2`, `XZ`, and `ZSTD`.
 * **Parallel Extraction:** Reads TAR sequentially but delegates filesystem writes, file creations, and metadata restoration (`chmod`/`chown`) to a parallel worker pool.
+* **Parallel GZIP Decompression via GZIDX:** For indexed `.tar.gz` archives, `ParallelDecompressGzipIndexed`/`TarFS.OpenParallelGzip` split the decompression itself across the archive's saved GZIDX checkpoints, inflating independent segments concurrently in separate goroutines (each reseeded from its checkpoint's saved offset and 32KB sliding-dictionary window) and reassembling the bytes in order — unlike the single sequential decompressor used elsewhere, this uses multiple CPU cores to decompress one archive.
 * **In-place Updates (Updater):** Truncates existing TAR EOF zero blocks to allow appending new files without full archive rewrite.
 * **ratarmount-compatible Indexing & Random Access (`fs.FS`):**
   * Indexes `.tar` or compressed `.tar.*` archives on the fly into an SQLite database with a schema identical to `ratarmount`.
@@ -98,7 +99,36 @@ if err := e.Extract(context.Background()); err != nil {
 }
 ```
 
-### 4. Append files to TAR
+### 4. Parallel GZIP Decompression via GZIDX
+
+```go
+tfs, err := tar.NewFS("archive.tar.gz", "archive.tar.gz.index.sqlite")
+if err != nil {
+	log.Fatal(err)
+}
+defer tfs.Close()
+
+// Requires a GZIP archive that already has a saved GZIDX index (created
+// on the fly by NewFS above, or embedded by the Archiver). Splits the
+// decompression itself across the saved checkpoints, one goroutine per
+// segment, instead of a single sequential decompressor.
+rc, err := tfs.OpenParallelGzip(0) // 0 = runtime.GOMAXPROCS(0)
+if err != nil {
+	log.Fatal(err)
+}
+defer rc.Close()
+
+tr := tar.NewReader(rc)
+for {
+	hdr, err := tr.Next()
+	if err == io.EOF {
+		break
+	}
+	// ... consume hdr / tr as with any archive/tar.Reader
+}
+```
+
+### 5. Append files to TAR
 
 ```go
 f, err := os.OpenFile("archive.tar", os.O_RDWR, 0644)

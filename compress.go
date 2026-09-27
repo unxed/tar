@@ -356,25 +356,29 @@ func (rg *resumedGzipReader) Close() error {
 	return rg.current.Close()
 }
 
-func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOffset int64) (io.ReadCloser, int64, error) {
+// parseGzipIndexPoints decodes a serialized GZIDX blob (as produced by
+// gzipIndexTrackingReader.ExportGzipIndex) into its list of checkpoints.
+// Shared by ResumeFromGzipIndex (single-point random access) and the parallel
+// decompression path in gzip_parallel.go (every checkpoint at once).
+func parseGzipIndexPoints(indexData []byte) ([]gzPoint, error) {
 	gr, err := gzip.NewReader(bytes.NewReader(indexData))
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	defer gr.Close()
 
 	dflidx, err := io.ReadAll(gr)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	if len(dflidx) < 35 || string(dflidx[:5]) != "GZIDX" {
-		return nil, 0, errors.New("tar: invalid GZIDX header")
+		return nil, errors.New("tar: invalid GZIDX header")
 	}
 
 	version := dflidx[5]
 	if version > 1 {
-		return nil, 0, fmt.Errorf("tar: unsupported GZIDX version: %d", version)
+		return nil, fmt.Errorf("tar: unsupported GZIDX version: %d", version)
 	}
 
 	numPoints := binary.LittleEndian.Uint32(dflidx[31:35])
@@ -396,18 +400,16 @@ func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOff
 		}
 	}
 
-	var best *gzPoint
-	for i := range points {
-		if points[i].uncompOffset <= uint64(targetOffset) {
-			if best == nil || points[i].uncompOffset > best.uncompOffset {
-				best = &points[i]
-			}
-		}
-	}
-	if best == nil {
-		return nil, 0, errors.New("tar: no suitable seek point found")
-	}
+	return points, nil
+}
 
+// resumeAtPoint opens an independent decompression stream anchored at a single
+// GZIDX checkpoint: a plain gzip member restart when the point carries no
+// sliding-dictionary window (hasData == 0), or a flate resume seeded with the
+// saved 32KB window otherwise. It performs no lookup of its own, unlike
+// ResumeFromGzipIndex, so callers that already know which point they want
+// (e.g. one segment of a parallel decode) can use it directly.
+func resumeAtPoint(r io.ReaderAt, best *gzPoint) (io.ReadCloser, error) {
 	seekOffset := int64(best.compOffset)
 	sr := io.NewSectionReader(r, seekOffset, 1<<63-1)
 	br := bufio.NewReaderSize(sr, 1024*1024) // 1MB buffer instead of default 4KB
@@ -415,9 +417,9 @@ func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOff
 	if best.hasData == 0 {
 		gr, err := gzip.NewReader(br)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
-		return gr, int64(best.uncompOffset), nil
+		return gr, nil
 	}
 
 	cp := flate.InflateCheckpoint{
@@ -438,7 +440,32 @@ func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOff
 		isFlate: true,
 	}
 
-	return rg, int64(best.uncompOffset), nil
+	return rg, nil
+}
+
+func (gzipFormat) ResumeFromGzipIndex(r io.ReaderAt, indexData []byte, targetOffset int64) (io.ReadCloser, int64, error) {
+	points, err := parseGzipIndexPoints(indexData)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var best *gzPoint
+	for i := range points {
+		if points[i].uncompOffset <= uint64(targetOffset) {
+			if best == nil || points[i].uncompOffset > best.uncompOffset {
+				best = &points[i]
+			}
+		}
+	}
+	if best == nil {
+		return nil, 0, errors.New("tar: no suitable seek point found")
+	}
+
+	rc, err := resumeAtPoint(r, best)
+	if err != nil {
+		return nil, 0, err
+	}
+	return rc, int64(best.uncompOffset), nil
 }
 
 // -- BZIP2 --
