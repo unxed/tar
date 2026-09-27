@@ -12,13 +12,25 @@ import (
 	"unicode/utf8"
 )
 
-// IndexArchive builds the index of an archive at indexPath. An index that
-// could not be finished is removed again: the next open of the archive finds
-// the file, takes it for a finished index and lists an empty archive without
-// reporting anything (f4 issue #1187, where a tar.xz that cannot be
-// decompressed at all opened as empty on the second try).
+// IndexArchive builds the index of an archive at indexPath, using whichever
+// backend the tarindex_simple build tag currently binds to OpenIndex/Index
+// (IndexBackendAuto). An index that could not be finished is removed again:
+// the next open of the archive finds the file, takes it for a finished
+// index and lists an empty archive without reporting anything (f4 issue
+// #1187, where a tar.xz that cannot be decompressed at all opened as empty
+// on the second try).
 func IndexArchive(archivePath, indexPath string) error {
-	err := indexArchive(archivePath, indexPath)
+	return IndexArchiveWithBackend(archivePath, indexPath, IndexBackendAuto)
+}
+
+// IndexArchiveWithBackend is IndexArchive with an explicit IndexBackend
+// (index_backend.go), so a caller that asked NewFS/WithFSIndexBackend for a
+// specific backend gets an index actually written in that backend's format,
+// not the tag-bound default. fs.go's prepareIndex uses this instead of
+// IndexArchive so building a fresh index and then opening it (the very next
+// step in prepareIndex) agree on which backend they mean.
+func IndexArchiveWithBackend(archivePath, indexPath string, backend IndexBackend) error {
+	err := indexArchive(archivePath, indexPath, backend)
 	if err != nil {
 		// Removing it is best effort: there is already an error to
 		// report, and a leftover index is what this guards against.
@@ -27,7 +39,7 @@ func IndexArchive(archivePath, indexPath string) error {
 	return err
 }
 
-func indexArchive(archivePath, indexPath string) error {
+func indexArchive(archivePath, indexPath string, backend IndexBackend) error {
 	ra, size, err := OpenMultiVolume(archivePath, os.O_RDONLY)
 	if err != nil {
 		return err
@@ -66,7 +78,7 @@ func indexArchive(archivePath, indexPath string) error {
 	tr := &trackingReader{r: bufferedRd}
 	trd := tar.NewReader(tr)
 	os.Remove(indexPath)
-	idx, err := OpenIndex(indexPath)
+	idx, err := openIndexForBackend(backend, indexPath)
 	if err != nil {
 		return err
 	}

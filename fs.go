@@ -114,8 +114,15 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 		createdIndex = false
 		if _, errStat := os.Stat(targetIndexPath); os.IsNotExist(errStat) {
 			createdIndex = true
+			// The embedded ratarmount shadow stream, when present, is always
+			// a SQLite blob (that's the on-disk format ratarmount itself
+			// writes there) - never hand it to ArcidxIndex, which would just
+			// fail to parse it as flatbuffers (openIndexForBackend below).
+			// An explicit IndexBackendArcidx request skips straight to
+			// building a fresh index by scanning, same as if no shadow
+			// stream had been found at all.
 			_, shadowSize, errLocate := LocateShadowStream(ra, size, method)
-			if errLocate == nil && shadowSize > 0 {
+			if options.indexBackend != IndexBackendArcidx && errLocate == nil && shadowSize > 0 {
 				f, errCreate := os.OpenFile(targetIndexPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
 				if errCreate == nil {
 					errShadow := ExtractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
@@ -124,18 +131,19 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 						isTemporaryIndex = true
 					} else {
 						os.Remove(targetIndexPath)
-						if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
+						if errIdx := IndexArchiveWithBackend(archivePath, targetIndexPath, options.indexBackend); errIdx != nil {
 							return nil, errIdx
 						}
 					}
 				} else {
-					if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
+					if errIdx := IndexArchiveWithBackend(archivePath, targetIndexPath, options.indexBackend); errIdx != nil {
 						return nil, errIdx
 					}
 				}
 			} else {
-				// No embedded shadow stream found, build index by scanning the archive
-				if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
+				// No embedded shadow stream found (or arcidx was requested
+				// explicitly), build index by scanning the archive
+				if errIdx := IndexArchiveWithBackend(archivePath, targetIndexPath, options.indexBackend); errIdx != nil {
 					return nil, errIdx
 				}
 			}

@@ -19,3 +19,12 @@ var errNoSqlite = errors.New("tar: indexing is not supported on this platform (S
 func IndexArchive(archivePath, indexPath string) error {
 	return errNoSqlite
 }
+
+// IndexArchiveWithBackend mirrors IndexArchive on this OS set: the scanning
+// loop itself (indexer_enabled.go) is unavailable here regardless of which
+// IndexBackend was requested, exactly as openSQLiteIndex (sqlite_disabled.go)
+// already treats IndexBackendSQLite the same as IndexBackendAuto on these
+// OSes - see index_backend.go's IndexBackendSQLite doc comment.
+func IndexArchiveWithBackend(archivePath, indexPath string, backend IndexBackend) error {
+	return errNoSqlite
+}
