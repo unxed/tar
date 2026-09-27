@@ -19,7 +19,7 @@ import (
 type TarFS struct {
 	ArchivePath      string
 	IndexPath        string
-	Index            *Index
+	Index            FileIndex
 	method           uint16
 	xzBlocks         []xz.Block
 	closer           io.Closer
@@ -46,13 +46,24 @@ func (t *TarFS) GetComment() string {
 type FSOption func(*fsOptions)
 
 type fsOptions struct {
-	password string
+	password     string
+	indexBackend IndexBackend
 }
 
 // WithFSPassword provides the password for decrypting F4Crypt encrypted archives in TarFS.
 func WithFSPassword(p string) FSOption {
 	return func(o *fsOptions) {
 		o.password = p
+	}
+}
+
+// WithFSIndexBackend explicitly selects which FileIndex implementation
+// NewFS opens (see IndexBackend in index_backend.go). Omitting this option
+// keeps the pre-existing IndexBackendAuto behavior: whichever backend the
+// tarindex_simple build tag currently binds to OpenIndex/Index.
+func WithFSIndexBackend(b IndexBackend) FSOption {
+	return func(o *fsOptions) {
+		o.indexBackend = b
 	}
 }
 
@@ -99,12 +110,19 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 	isTemporaryIndex := false
 	var createdIndex bool
 
-	prepareIndex := func(targetIndexPath string) (*Index, error) {
+	prepareIndex := func(targetIndexPath string) (FileIndex, error) {
 		createdIndex = false
 		if _, errStat := os.Stat(targetIndexPath); os.IsNotExist(errStat) {
 			createdIndex = true
+			// The embedded ratarmount shadow stream, when present, is always
+			// a SQLite blob (that's the on-disk format ratarmount itself
+			// writes there) - never hand it to ArcidxIndex, which would just
+			// fail to parse it as flatbuffers (openIndexForBackend below).
+			// An explicit IndexBackendArcidx request skips straight to
+			// building a fresh index by scanning, same as if no shadow
+			// stream had been found at all.
 			_, shadowSize, errLocate := LocateShadowStream(ra, size, method)
-			if errLocate == nil && shadowSize > 0 {
+			if options.indexBackend != IndexBackendArcidx && errLocate == nil && shadowSize > 0 {
 				f, errCreate := os.OpenFile(targetIndexPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
 				if errCreate == nil {
 					errShadow := ExtractShadowFileToWriter(ra, size, method, ".tarext/ratarmount/index.sqlite", f)
@@ -113,24 +131,25 @@ func NewFS(archivePath, indexPath string, opts ...FSOption) (*TarFS, error) {
 						isTemporaryIndex = true
 					} else {
 						os.Remove(targetIndexPath)
-						if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
+						if errIdx := IndexArchiveWithBackend(archivePath, targetIndexPath, options.indexBackend); errIdx != nil {
 							return nil, errIdx
 						}
 					}
 				} else {
-					if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
+					if errIdx := IndexArchiveWithBackend(archivePath, targetIndexPath, options.indexBackend); errIdx != nil {
 						return nil, errIdx
 					}
 				}
 			} else {
-				// No embedded shadow stream found, build index by scanning the archive
-				if errIdx := IndexArchive(archivePath, targetIndexPath); errIdx != nil {
+				// No embedded shadow stream found (or arcidx was requested
+				// explicitly), build index by scanning the archive
+				if errIdx := IndexArchiveWithBackend(archivePath, targetIndexPath, options.indexBackend); errIdx != nil {
 					return nil, errIdx
 				}
 			}
 		}
 
-		idx, err := OpenIndex(targetIndexPath)
+		idx, err := openIndexForBackend(options.indexBackend, targetIndexPath)
 		if err != nil {
 			if createdIndex {
 				os.Remove(targetIndexPath)

@@ -39,6 +39,8 @@
 // and no risk of the two drifting out of sync as ArcidxIndex evolves.
 package tar
 
+import "errors"
+
 // Index, under this build tag, is ArcidxIndex: see the package doc comment
 // above for why this is a type alias rather than a new type.
 type Index = ArcidxIndex
@@ -51,4 +53,16 @@ type Index = ArcidxIndex
 // SQLite DSN string.
 func OpenIndex(dsn string) (*Index, error) {
 	return OpenArcidxIndex(dsn)
+}
+
+// ErrSQLiteBackendUnavailable is returned by IndexBackendSQLite
+// (index_backend.go) on a tarindex_simple build: sqlite_enabled.go/
+// sqlite_disabled.go are excluded by this same tag (see their own build
+// constraints), so there is no SQLite-backed Index type to open at all here,
+// unlike on the BSD/Solaris OSes where SQLite is merely unwired
+// (errNoSqlite) rather than uncompiled.
+var ErrSQLiteBackendUnavailable = errors.New("tar: SQLite index backend was not compiled into this binary (built with -tags tarindex_simple)")
+
+func openSQLiteIndex(dsn string) (FileIndex, error) {
+	return nil, ErrSQLiteBackendUnavailable
 }
