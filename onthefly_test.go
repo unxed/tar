@@ -1,4 +1,9 @@
-//go:build !freebsd && !openbsd && !netbsd && !dragonfly && !solaris && !illumos
+//go:build !freebsd && !openbsd && !netbsd && !dragonfly && !solaris && !illumos && !tarindex_simple
+
+// (Beyond the OS gate above, this file also reaches into Index's private
+// sqlite internals (idx.db) in a couple of places, which is why it also
+// excludes tarindex_simple: under that tag Index is ArcidxIndex, which has
+// no db field.)
 
 package tar
 

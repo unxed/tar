@@ -1,3 +1,10 @@
+//go:build !tarindex_simple
+
+// This file reaches into Index's private sqlite internals (idx.db) in a
+// couple of tests below, so it is restricted to the sqlite backend: under
+// tarindex_simple, Index is ArcidxIndex (see tarindex_simple.go), which has
+// no db field at all.
+
 package tar
 
 import (

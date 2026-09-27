@@ -1,12 +1,10 @@
-//go:build freebsd || openbsd || netbsd || dragonfly || solaris || illumos
+//go:build (freebsd || openbsd || netbsd || dragonfly || solaris || illumos) && !tarindex_simple
 
 package tar
 
-import (
-	"errors"
-)
-
-var errNoSqlite = errors.New("tar: indexing is not supported on this platform (SQLite requires CGO or missing libc support)")
+// errNoSqlite is declared in indexer_disabled.go (which, unlike this file,
+// has no tarindex_simple exclusion - see its comment for why) and reused
+// here.
 
 type Index struct{}
 

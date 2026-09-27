@@ -1,5 +1,9 @@
-//go:build freebsd || openbsd || netbsd || dragonfly || solaris || illumos
-// +build freebsd openbsd netbsd dragonfly solaris illumos
+//go:build (freebsd || openbsd || netbsd || dragonfly || solaris || illumos) && !tarindex_simple
+
+// This exercises sqlite_disabled.go's all-errors Index stub specifically
+// (via a bare &Index{} literal and errNoSqlite comparisons), so it excludes
+// tarindex_simple exactly like sqlite_disabled.go itself does: under that
+// tag Index is ArcidxIndex, a working implementation, not this stub.
 
 package tar
 
