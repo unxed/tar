@@ -8,6 +8,12 @@ package tar
 
 type Index struct{}
 
+// openSQLiteIndex backs IndexBackendSQLite (index_backend.go) on this OS set:
+// SQLite was never wired up here (see errNoSqlite's comment above), so it
+// returns the same error OpenIndex already does - explicit selection doesn't
+// unlock anything OpenIndex couldn't already do on these platforms.
+func openSQLiteIndex(dsn string) (FileIndex, error) { return OpenIndex(dsn) }
+
 func OpenIndex(dsn string) (*Index, error)                                      { return nil, errNoSqlite }
 func (idx *Index) Close() error                                                 { return nil }
 func (idx *Index) InitMetadata() error                                          { return nil }

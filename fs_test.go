@@ -255,7 +255,7 @@ func TestZstdFastPath(t *testing.T) {
 
 	// 4. Manually insert the seek point for Frame 2 into SQLite.
 	// This simulates having a pre-existing index from Python ratarmount or a specialized exporter.
-	_, err = tfs.Index.db.Exec(`INSERT INTO zstdblocks (blockoffset, dataoffset) VALUES (?, ?)`, frame2Start, splitOffset)
+	_, err = tfs.Index.(*Index).db.Exec(`INSERT INTO zstdblocks (blockoffset, dataoffset) VALUES (?, ?)`, frame2Start, splitOffset)
 	if err != nil {
 		t.Fatal(err)
 	}

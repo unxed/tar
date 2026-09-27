@@ -89,6 +89,14 @@ func OpenIndex(dsn string) (*Index, error) {
 	return &Index{db: db}, nil
 }
 
+// openSQLiteIndex backs IndexBackendSQLite (index_backend.go): on this build
+// (SQLite compiled in, tarindex_simple not set) it is just OpenIndex, named
+// distinctly so index_backend.go can call it regardless of which concrete
+// type OpenIndex/Index currently name.
+func openSQLiteIndex(dsn string) (FileIndex, error) {
+	return OpenIndex(dsn)
+}
+
 func (idx *Index) Close() error {
 	return idx.db.Close()
 }
