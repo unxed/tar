@@ -3,6 +3,7 @@ module github.com/unxed/tar
 go 1.25.5
 
 require (
+	github.com/google/flatbuffers v25.12.19+incompatible
 	github.com/klauspost/compress v1.19.2
 	github.com/klauspost/pgzip v1.2.6
 	github.com/ncruces/go-sqlite3 v0.35.2

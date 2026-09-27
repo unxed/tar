@@ -1,0 +1,56 @@
+// Schema for the tar-arcidx FlatBuffers ratarmount-compatible archive index.
+//
+// This is the schema standardized in the ratarmount upstream discussion at
+// https://github.com/mxmlnkn/ratarmount/issues/192 (see the "revised schema
+// incorporating all of your feedback" comment for the final, agreed-upon
+// version). It is reproduced here verbatim so that this Go implementation,
+// a future Python/ratarmount reader, and any other language binding stay
+// binary-compatible with each other.
+//
+// See also unxed/tar's f4tar.md, section on `.tarext/ratarmount/index.arcidx`,
+// and f4#1178 for the context of why this backend exists (an sqlite-free,
+// mmap-friendly alternative to `sqlite_enabled.go`'s `index.sqlite`).
+namespace arcidx;
+
+// Deduplicated metadata tuples. Structs in FlatBuffers are inlined and zero-copy.
+struct MetadataTuple {
+  mode: uint32;
+  uid: uint32;
+  gid: uint32;
+  recursion_depth: uint32;
+  type_flag: ubyte;
+  is_tar: bool;
+  is_sparse: bool;
+  is_generated: bool;
+}
+
+table Xattr {
+  key_id: uint32;        // Index into ArchiveIndex.xattr_keys
+  value: [ubyte];
+}
+
+table FileNode {
+  path_id: uint32;       // Index into ArchiveIndex.paths
+  name: string;
+  offset_header: uint64;
+  offset_data: uint64;
+  size: uint64;
+  mtime: int64;          // varies per file, not deduplicated
+  metadata_id: uint32;   // Index into ArchiveIndex.metadata_tuples
+  xattrs: [Xattr];
+  acl: [ubyte];
+  link_name: string;
+}
+
+table ArchiveIndex {
+  version: uint8 = 1;
+  backend_name: string;
+  paths: [string];                       // Deduplicated directory paths
+  xattr_keys: [string];                  // Deduplicated xattr keys
+  metadata_tuples: [MetadataTuple];
+  files: [FileNode];                     // Ordered by path_id -> name for binary search
+  compression_format: string;            // e.g., "gzidx", "gztool_index", "indexed_zstd"
+  compression_blob: [ubyte];             // Unified binary blob for the compression index
+}
+
+root_type ArchiveIndex;
