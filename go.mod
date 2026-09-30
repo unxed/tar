@@ -3,6 +3,7 @@ module github.com/unxed/tar
 go 1.25.5
 
 require (
+	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707
 	github.com/google/flatbuffers v25.12.19+incompatible
 	github.com/klauspost/compress v1.19.2
 	github.com/klauspost/pgzip v1.2.6
